@@ -226,16 +226,33 @@ if ($turnEnabled) {
     $cfgChanged = $true
   }
   if (-not $t.publicIp) {
-    # Oeffentliche IP ueber Cloudflare ermitteln (gleiche Infrastruktur wie die Domain).
-    $trace = (Invoke-WebRequest 'https://cloudflare.com/cdn-cgi/trace' -UseBasicParsing -TimeoutSec 10).Content
-    if ($trace -is [byte[]]) { $trace = [Text.Encoding]::ASCII.GetString($trace) }
-    if ($trace -match '(?m)^ip=(\d+\.\d+\.\d+\.\d+)\s*$') {
-      Set-Prop $t 'publicIp' $Matches[1]
-      Write-Host "   Oeffentliche IP erkannt: $($Matches[1])"
-      $cfgChanged = $true
-    } else {
-      throw 'Oeffentliche IPv4 nicht ermittelbar. Bitte turn.publicIp in config.json eintragen.'
+    # Oeffentliche IPv4 ermitteln. Ueber Hostnamen antwortet der Dienst bei
+    # bevorzugtem IPv6 mit der IPv6-Adresse, daher IPv4-erzwingende Quellen.
+    $ipv4 = '^\d{1,3}(\.\d{1,3}){3}$'
+    $found = $null
+    foreach ($src in @(
+        @{ Url = 'https://1.1.1.1/cdn-cgi/trace'; Pattern = '(?m)^ip=(\S+)\s*$' },
+        @{ Url = 'https://api.ipify.org'; Pattern = '^\s*(\S+)\s*$' }
+      )) {
+      try {
+        $body = (Invoke-WebRequest $src.Url -UseBasicParsing -TimeoutSec 10).Content
+        if ($body -is [byte[]]) { $body = [Text.Encoding]::ASCII.GetString($body) }
+        if ($body -match $src.Pattern -and $Matches[1] -match $ipv4) { $found = $Matches[1]; break }
+      } catch { }
     }
+    if (-not $found) {
+      # Ohne Internet-Abfrage: genau eine oeffentliche IPv4 auf den Netzwerkkarten?
+      $nicIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+          $a = $_.IPAddress
+          $a -notmatch '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)'
+        } | ForEach-Object { $_.IPAddress })
+      if ($nicIps.Count -eq 1) { $found = $nicIps[0] }
+      elseif ($nicIps.Count -gt 1) { throw "Mehrere oeffentliche IPv4-Adressen gefunden ($($nicIps -join ', ')). Bitte die gewuenschte als turn.publicIp in config.json eintragen." }
+    }
+    if (-not $found) { throw 'Oeffentliche IPv4 nicht ermittelbar. Bitte turn.publicIp in config.json eintragen.' }
+    Set-Prop $t 'publicIp' $found
+    Write-Host "   Oeffentliche IPv4 erkannt: $found"
+    $cfgChanged = $true
   }
   $turnPort = if ($t.listenPort) { [int]$t.listenPort } else { 3478 }
 

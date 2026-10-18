@@ -13,5 +13,12 @@ contextBridge.exposeInMainWorld('api', {
   updateStatus: () => ipcRenderer.invoke('update:status'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
-  onUpdate: (cb) => ipcRenderer.on('update:event', (_e, s) => cb(s))
+  onUpdate: (cb) => ipcRenderer.on('update:event', (_e, s) => cb(s)),
+
+  // Einladungslinks: einen evtl. beim Start uebergebenen Link sofort holen,
+  // danach auf weitere warten.
+  onInvite: (cb) => {
+    ipcRenderer.on('invite', (_e, link) => cb(link));
+    ipcRenderer.invoke('invite:take').then((link) => link && cb(link));
+  }
 });

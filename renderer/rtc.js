@@ -4,7 +4,13 @@
  * P2P-Modus = Mesh: Der Host baut zu jedem Zuschauer eine eigene
  * RTCPeerConnection auf und sendet ihm einen eigenen Stream. Upload des
  * Hosts ~ Bitrate x Zuschauer.
+ *
+ * Server-Modus: Der Host hat genau eine Verbindung zum virtuellen Teilnehmer
+ * "sfu" auf dem Server, der den Stream an alle Zuschauer verteilt. Upload des
+ * Hosts = einmal die Bitrate. Fuer Zuschauer ist "sfu" einfach der Host.
  */
+
+export const SFU_ID = 'sfu';
 
 /* ---------- Signaling ---------- */
 
@@ -132,18 +138,35 @@ function applyCodecPreference(transceiver, codec) {
 /* ---------- Host ---------- */
 
 export class HostSession extends EventTarget {
-  constructor({ signaling, iceServers, stream, settings }) {
+  constructor({ signaling, iceServers, stream, settings, mode = 'p2p' }) {
     super();
     this.sig = signaling;
     this.iceServers = iceServers;
     this.stream = stream;
     this.settings = settings;
+    this.mode = mode;
     this.peers = new Map(); // peerId -> { pc, name, video, audio, pending, stats }
+    this.audience = new Map(); // nur Server-Modus: peerId -> Name
     this.statsTimer = setInterval(() => this.collectStats(), 1000);
 
-    this.sig.on('viewer-joined', (m) => this.addViewer(m.peerId, m.name));
-    this.sig.on('viewer-left', (m) => this.removeViewer(m.peerId));
+    if (mode === 'server') {
+      this.sig.on('viewer-joined', (m) => { this.audience.set(m.peerId, m.name); this.emitChange(); });
+      this.sig.on('viewer-left', (m) => { this.audience.delete(m.peerId); this.emitChange(); });
+      this.addViewer(SFU_ID, 'Server');
+    } else {
+      this.sig.on('viewer-joined', (m) => this.addViewer(m.peerId, m.name));
+      this.sig.on('viewer-left', (m) => this.removeViewer(m.peerId));
+    }
     this.sig.on('signal', (m) => this.onSignal(m.from, m.data));
+  }
+
+  // Anzahl der Streams, die der Host hochlaedt.
+  get uploadStreams() {
+    return this.peers.size;
+  }
+
+  get viewerCount() {
+    return this.mode === 'server' ? this.audience.size : this.peers.size;
   }
 
   emitChange() {
@@ -213,7 +236,12 @@ export class HostSession extends EventTarget {
 
   kick(peerId) {
     this.sig.send({ type: 'kick', peerId });
-    this.removeViewer(peerId);
+    if (this.mode === 'server') {
+      this.audience.delete(peerId);
+      this.emitChange();
+    } else {
+      this.removeViewer(peerId);
+    }
   }
 
   async attachTracks(peer) {
@@ -299,6 +327,16 @@ export class HostSession extends EventTarget {
   }
 
   viewerList() {
+    if (this.mode === 'server') {
+      // Zuschauer laufen ueber den Server; Messwerte gibt es nur fuer die
+      // eigene Verbindung zum Server (Zeile ohne Entfernen-Knopf).
+      const up = this.peers.get(SFU_ID);
+      const viaServer = up && up.state === 'verbunden' ? 'über Server' : (up ? up.state : 'verbinde');
+      return [
+        ...(up ? [{ id: SFU_ID, name: '⇅ Upload zum Server', state: up.state, stats: up.stats, server: true }] : []),
+        ...[...this.audience].map(([id, name]) => ({ id, name, state: viaServer, stats: {} }))
+      ];
+    }
     return [...this.peers].map(([id, p]) => ({ id, name: p.name, state: p.state, stats: p.stats }));
   }
 

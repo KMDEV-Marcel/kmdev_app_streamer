@@ -5,10 +5,12 @@ const updater = require('./updater');
 
 const ICON = path.join(__dirname, 'build', 'icon.ico');
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
+const PROTOCOL = 'kmdev-stream';
 
 let win = null;
 let streaming = false;
 let selectedSourceId = null;
+let pendingInvite = null; // Einladungslink, bevor das Fenster bereit ist
 
 /* ---------- Einstellungen ---------- */
 
@@ -30,6 +32,7 @@ migrateLegacySettings();
 // ersten Start selbst ein (Repo ist oeffentlich, keine Domains im Code).
 const DEFAULT_SETTINGS = {
   serverUrl: '',
+  accessKey: '',
   displayName: '',
   preset: '1080',
   resolution: '1080',
@@ -165,15 +168,41 @@ ipcMain.handle('shell:open', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
 
+/* ---------- Einladungslinks (kmdev-stream://...) ----------
+   Windows startet die App mit dem Link als Argument; laeuft sie schon, kommt
+   er ueber 'second-instance'. Ausgewertet wird im Renderer (invite.js). */
+
+function findInvite(argv) {
+  return argv.find((a) => typeof a === 'string' && a.toLowerCase().startsWith(PROTOCOL + '://')) || null;
+}
+
+function deliverInvite(link) {
+  if (!link) return;
+  if (win && !win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send('invite', link);
+  else pendingInvite = link;
+}
+
+ipcMain.handle('invite:take', () => {
+  const link = pendingInvite;
+  pendingInvite = null;
+  return link;
+});
+
 /* ---------- Start ---------- */
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  // Der Installer registriert das Protokoll ebenfalls; hier nur nachziehen,
+  // falls die App verschoben wurde. Entwicklungsstarts registrieren nichts.
+  if (app.isPackaged) app.setAsDefaultProtocolClient(PROTOCOL);
+  pendingInvite = findInvite(process.argv);
+
+  app.on('second-instance', (_e, argv) => {
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.focus();
+    deliverInvite(findInvite(argv));
   });
 
   app.whenReady().then(() => {

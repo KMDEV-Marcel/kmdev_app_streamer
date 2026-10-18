@@ -1,6 +1,6 @@
 {
   "name": "kmdev-stream",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "P2P-Bildschirmübertragung mit Auto-Update",
   "main": "main.js",
   "author": "Marcel Kari",
@@ -49,6 +49,14 @@
         "owner": "KMDEV-Marcel",
         "repo": "kmdev_app_streamer",
         "releaseType": "release"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "KM-DEV Stream",
+        "schemes": [
+          "kmdev-stream"
+        ]
       }
     ]
   },

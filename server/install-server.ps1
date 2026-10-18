@@ -9,9 +9,11 @@
     deren Pruefsummen
   - registriert Node-Server und Caddy als Windows-Dienste (ueber WinSW,
     mit Neustart bei Absturz und Log-Rotation)
-  - richtet den TURN-Server ein (Relay fuer Teilnehmer hinter NAT/Firewall):
-    Secret und oeffentliche IP automatisch, EXE aus dem GitHub-Release
-  - oeffnet die Firewall fuer HTTPS und TURN
+  - richtet den Medien-Server ein (kmdev-media.exe aus dem GitHub-Release):
+    TURN (Relay fuer Teilnehmer hinter NAT/Firewall) und Server-Modus (SFU,
+    der Server verteilt den Stream). Secrets und oeffentliche IP automatisch.
+  - erzeugt den Zugangsschluessel und gibt eine Einladung fuer die App aus
+  - oeffnet die Firewall fuer HTTPS, TURN und Server-Modus
 
   Einzige Voraussetzung: Node.js LTS (https://nodejs.org, .msi-Installer).
 
@@ -32,6 +34,9 @@
 .PARAMETER NoTurn
   TURN-Server nicht einrichten bzw. deaktivieren.
 
+.PARAMETER NoSfu
+  Server-Modus (SFU) nicht einrichten bzw. deaktivieren.
+
 .PARAMETER UpdateCaddy
   bin\caddy.exe neu herunterladen, auch wenn sie schon existiert.
 #>
@@ -40,7 +45,8 @@ param(
   [string]$Caddy,
   [switch]$UpdateCaddy,
   [int]$HttpsPort,
-  [switch]$NoTurn
+  [switch]$NoTurn,
+  [switch]$NoSfu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -162,6 +168,13 @@ if ($caddyText -match 'reverse_proxy\s+127\.0\.0\.1:\d+') {
   [IO.File]::WriteAllText($caddyfilePath, $caddyText, [Text.UTF8Encoding]::new($false))
   Write-Host '   Caddyfile auf {$KMDEV_SIGNAL_PORT} umgestellt.'
 }
+# Aeltere Caddyfiles beantworten alles ausser /ws und /health selbst; fuer die
+# Browser-Seite (/watch) muss der Rest auch an Node gehen.
+if ($caddyText -match 'respond\s+"KM-DEV Stream"\s+200') {
+  $caddyText = $caddyText -replace 'respond\s+"KM-DEV Stream"\s+200', 'reverse_proxy 127.0.0.1:{$KMDEV_SIGNAL_PORT:8443}'
+  [IO.File]::WriteAllText($caddyfilePath, $caddyText, [Text.UTF8Encoding]::new($false))
+  Write-Host '   Caddyfile: Browser-Seite (/watch) freigeschaltet.'
+}
 $env:KMDEV_SIGNAL_PORT = "$port"
 
 # ---------- HTTPS-Port fuer Caddy ----------
@@ -204,24 +217,54 @@ if ($HttpsPort) {
 $env:KMDEV_HTTPS_PORT = "$caddyPort"
 Write-Host "== HTTPS-Port fuer Caddy: $caddyPort"
 
-# ---------- TURN (Relay fuer Verbindungen hinter NAT/Firewall) ----------
-# Laeuft direkt auf der oeffentlichen IP, NICHT ueber Cloudflare (UDP).
-# Secret und oeffentliche IP werden beim ersten Lauf automatisch gesetzt.
+# ---------- Zugangsschluessel, TURN und Server-Modus (SFU) ----------
+# Zugangsschluessel: wer streamen oder die Stream-Liste sehen will, braucht ihn
+# (steckt in der Einladung, die am Ende ausgegeben wird).
+# TURN und SFU laufen direkt auf der oeffentlichen IP, NICHT ueber Cloudflare
+# (UDP). Secrets und oeffentliche IP werden beim ersten Lauf automatisch gesetzt.
 
 $turnEnabled = -not $NoTurn
+$sfuEnabled = -not $NoSfu
+$mediaEnabled = $turnEnabled -or $sfuEnabled
 $cfgObj = $configText | ConvertFrom-Json
-if (-not $cfgObj.turn) { $cfgObj | Add-Member -NotePropertyName turn -NotePropertyValue ([pscustomobject]@{}) }
-$t = $cfgObj.turn
 function Set-Prop($obj, $name, $value) {
   if ($obj.PSObject.Properties[$name]) { $obj.$name = $value } else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value }
 }
+function New-Secret {
+  $bytes = New-Object byte[] 32
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+function Test-WeakSecret($s) { return (-not $s) -or "$s".Length -lt 16 -or "$s" -match 'HIER-' }
+if (-not $cfgObj.turn) { $cfgObj | Add-Member -NotePropertyName turn -NotePropertyValue ([pscustomobject]@{}) }
+if (-not $cfgObj.sfu) { $cfgObj | Add-Member -NotePropertyName sfu -NotePropertyValue ([pscustomobject]@{}) }
+$t = $cfgObj.turn
+$sfu = $cfgObj.sfu
 $cfgChanged = $false
 
+if (Test-WeakSecret $cfgObj.accessKey) {
+  Set-Prop $cfgObj 'accessKey' (New-Secret).Substring(0, 32)
+  Write-Host '   Zugangsschluessel erzeugt.'
+  $cfgChanged = $true
+}
+
+# Von Windows reservierte UDP-Bereiche (Hyper-V/WSL/WinNAT).
+$udpExcluded = @()
+foreach ($line in (& netsh interface ipv4 show excludedportrange protocol=udp)) {
+  if ($line -match '^\s*(\d+)\s+(\d+)') { $udpExcluded += ,@([int]$Matches[1], [int]$Matches[2]) }
+}
+function Test-RangeFree($min, $max) {
+  foreach ($r in $udpExcluded) { if ($min -le $r[1] -and $max -ge $r[0]) { return $false } }
+  return $true
+}
+function Test-PortReserved([int]$p) {
+  foreach ($r in $udpExcluded + $excluded) { if ($p -ge $r[0] -and $p -le $r[1]) { return $true } }
+  return $false
+}
+
 if ($turnEnabled) {
-  if (-not $t.secret -or "$($t.secret)".Length -lt 16 -or "$($t.secret)" -match 'HIER-') {
-    $bytes = New-Object byte[] 32
-    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    Set-Prop $t 'secret' (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+  if (Test-WeakSecret $t.secret) {
+    Set-Prop $t 'secret' (New-Secret)
     Write-Host '   TURN-Secret erzeugt.'
     $cfgChanged = $true
   }
@@ -236,6 +279,9 @@ if ($turnEnabled) {
     }
   }
   if ("$($t.host)" -match 'example\.') { Set-Prop $t 'host' ''; $cfgChanged = $true }
+}
+
+if ($mediaEnabled) {
   # Gueltige IPv4? (TryParse allein akzeptiert auch Kurzformen wie "84".)
   function Test-IPv4($s) {
     $ip = $null
@@ -277,20 +323,11 @@ if ($turnEnabled) {
     Write-Host "   Oeffentliche IPv4 erkannt: $found"
     $cfgChanged = $true
   }
-  $turnPort = if ($t.listenPort) { [int]$t.listenPort } else { 3478 }
+}
 
-  # Relay-Portbereich darf nicht in einem von Windows reservierten UDP-Bereich liegen.
-  $udpExcluded = @()
-  foreach ($line in (& netsh interface ipv4 show excludedportrange protocol=udp)) {
-    if ($line -match '^\s*(\d+)\s+(\d+)') { $udpExcluded += ,@([int]$Matches[1], [int]$Matches[2]) }
-  }
-  function Test-RangeFree($min, $max) {
-    foreach ($r in $udpExcluded) { if ($min -le $r[1] -and $max -ge $r[0]) { return $false } }
-    return $true
-  }
-  foreach ($r in $udpExcluded + $excluded) {
-    if ($turnPort -ge $r[0] -and $turnPort -le $r[1]) { throw "TURN-Port $turnPort ist von Windows reserviert. Bitte turn.listenPort in config.json aendern." }
-  }
+if ($turnEnabled) {
+  $turnPort = if ($t.listenPort) { [int]$t.listenPort } else { 3478 }
+  if (Test-PortReserved $turnPort) { throw "TURN-Port $turnPort ist von Windows reserviert. Bitte turn.listenPort in config.json aendern." }
   $relayMin = if ($t.relayPortMin) { [int]$t.relayPortMin } else { 49160 }
   $relayMax = if ($t.relayPortMax) { [int]$t.relayPortMax } else { 49260 }
   if (-not (Test-RangeFree $relayMin $relayMax)) {
@@ -308,6 +345,29 @@ if ($turnEnabled) {
   Write-Host "== TURN: $($t.publicIp):$turnPort (UDP+TCP), Relay UDP $relayMin-$relayMax"
 } elseif ($t.enabled) {
   Set-Prop $t 'enabled' $false
+  $cfgChanged = $true
+}
+
+if ($sfuEnabled) {
+  if (Test-WeakSecret $sfu.secret) {
+    Set-Prop $sfu 'secret' (New-Secret)
+    $cfgChanged = $true
+  }
+  $sfuPort = if ($sfu.udpPort) { [int]$sfu.udpPort } else { 3479 }
+  if (Test-PortReserved $sfuPort) {
+    $old = $sfuPort
+    $sfuPort = @(3479, 3480, 5349, 8478, 9478, 19302) | Where-Object { -not (Test-PortReserved $_) -and $_ -ne $turnPort } | Select-Object -First 1
+    if (-not $sfuPort) { throw 'Kein freier Port fuer den Server-Modus gefunden. Bitte sfu.udpPort in config.json setzen.' }
+    Write-Host "   Port $old ist reserviert -> Server-Modus nutzt Port $sfuPort"
+  }
+  foreach ($kv in @{ enabled = $true; udpPort = $sfuPort }.GetEnumerator()) {
+    if ($sfu.PSObject.Properties[$kv.Key] -and $sfu.($kv.Key) -eq $kv.Value) { continue }
+    Set-Prop $sfu $kv.Key $kv.Value
+    $cfgChanged = $true
+  }
+  Write-Host "== Server-Modus (SFU): $($t.publicIp):$sfuPort (UDP+TCP)"
+} elseif ($sfu.enabled) {
+  Set-Prop $sfu 'enabled' $false
   $cfgChanged = $true
 }
 
@@ -362,20 +422,21 @@ if (-not $Caddy) {
 if (-not (Test-Path $Caddy)) { throw "caddy.exe nicht gefunden: $Caddy" }
 Write-Host "== Caddy: $(& $Caddy version)"
 
-# TURN-Server aus dem neuesten Release dieses Repos (dort von GitHub Actions gebaut).
-$turnExe = Join-Path $bin 'kmdev-turn.exe'
-if ($turnEnabled) {
+# Medien-Server (TURN + SFU) aus dem neuesten Release dieses Repos (dort von
+# GitHub Actions gebaut). Bis v0.1.x hiess er kmdev-turn.exe und war nur TURN.
+$mediaExe = Join-Path $bin 'kmdev-media.exe'
+if ($mediaEnabled) {
   $rel = Invoke-RestMethod 'https://api.github.com/repos/KMDEV-Marcel/kmdev_app_streamer/releases/latest' -UseBasicParsing
-  $exeAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-turn.exe' } | Select-Object -First 1
-  $sumAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-turn.exe.sha256' } | Select-Object -First 1
-  if (-not $exeAsset -or -not $sumAsset) { throw "Im Release $($rel.tag_name) fehlt kmdev-turn.exe - bitte ein neueres Release abwarten." }
+  $exeAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-media.exe' } | Select-Object -First 1
+  $sumAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-media.exe.sha256' } | Select-Object -First 1
+  if (-not $exeAsset -or -not $sumAsset) { throw "Im Release $($rel.tag_name) fehlt kmdev-media.exe - bitte ein neueres Release abwarten." }
   $sum = (Invoke-WebRequest $sumAsset.browser_download_url -UseBasicParsing).Content
   if ($sum -is [byte[]]) { $sum = [Text.Encoding]::ASCII.GetString($sum) }
   $expected = ($sum.Trim() -split '\s+')[0].ToUpper()
-  if (-not (Test-Path $turnExe) -or (Get-FileHash $turnExe -Algorithm SHA256).Hash -ne $expected) {
-    Write-Host "== Lade TURN-Server ($($rel.tag_name))"
-    if (Get-Service 'KMDevStreamTurn' -ErrorAction SilentlyContinue) { Stop-Service 'KMDevStreamTurn' -Force }
-    Get-Verified $exeAsset.browser_download_url $turnExe 'SHA256' $expected
+  if (-not (Test-Path $mediaExe) -or (Get-FileHash $mediaExe -Algorithm SHA256).Hash -ne $expected) {
+    Write-Host "== Lade Medien-Server ($($rel.tag_name))"
+    if (Get-Service 'KMDevStreamMedia' -ErrorAction SilentlyContinue) { Stop-Service 'KMDevStreamMedia' -Force }
+    Get-Verified $exeAsset.browser_download_url $mediaExe 'SHA256' $expected
   }
 }
 
@@ -451,13 +512,23 @@ Install-Svc 'KMDevStream' 'KM-DEV Stream Signaling' 'WebSocket-Signaling fuer KM
   $Node "`"$(Join-Path $here 'server.js')`""
 Install-Svc 'KMDevStreamCaddy' 'KM-DEV Stream Caddy (HTTPS)' 'HTTPS-Reverse-Proxy fuer KM-DEV Stream' `
   $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile" @{ KMDEV_SIGNAL_PORT = "$port"; KMDEV_HTTPS_PORT = "$caddyPort" }
-if ($turnEnabled) {
-  Install-Svc 'KMDevStreamTurn' 'KM-DEV Stream TURN' 'TURN-Relay fuer KM-DEV Stream' `
-    $turnExe "-config `"$configPath`""
-} elseif (Get-Service 'KMDevStreamTurn' -ErrorAction SilentlyContinue) {
-  Stop-Service 'KMDevStreamTurn' -Force -ErrorAction SilentlyContinue
-  & (Join-Path $svcDir 'KMDevStreamTurn.exe') uninstall | Out-Null
-  Write-Host '   TURN-Dienst entfernt.'
+function Remove-Svc($id) {
+  if (-not (Get-Service $id -ErrorAction SilentlyContinue)) { return }
+  Stop-Service $id -Force -ErrorAction SilentlyContinue
+  $svcExe = Join-Path $svcDir "$id.exe"
+  if (Test-Path $svcExe) { & $svcExe uninstall | Out-Null } else { & sc.exe delete $id | Out-Null }
+  Start-Sleep -Seconds 1
+  Remove-Item (Join-Path $svcDir "$id.*") -Force -ErrorAction SilentlyContinue
+  Write-Host "   Dienst $id entfernt."
+}
+# Alter reiner TURN-Dienst (bis v0.1.x) - abgeloest durch KMDevStreamMedia.
+Remove-Svc 'KMDevStreamTurn'
+Remove-Item (Join-Path $bin 'kmdev-turn.exe') -Force -ErrorAction SilentlyContinue
+if ($mediaEnabled) {
+  Install-Svc 'KMDevStreamMedia' 'KM-DEV Stream Medien-Server' 'TURN-Relay und Server-Modus (SFU) fuer KM-DEV Stream' `
+    $mediaExe "-config `"$configPath`""
+} else {
+  Remove-Svc 'KMDevStreamMedia'
 }
 
 # ---------- Firewall ----------
@@ -474,6 +545,10 @@ if ($turnEnabled) {
   Allow 'KMDev Stream TURN TCP' TCP $turnPort
   Allow 'KMDev Stream TURN UDP' UDP $turnPort
   Allow 'KMDev Stream TURN Relay' UDP "$relayMin-$relayMax"
+}
+if ($sfuEnabled) {
+  Allow 'KMDev Stream Server-Modus UDP' UDP $sfuPort
+  Allow 'KMDev Stream Server-Modus TCP' TCP $sfuPort
 }
 
 # ---------- Selbsttest ----------
@@ -508,17 +583,31 @@ if ($turnEnabled) {
     $ep = [System.Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
     $resp = $udp.Receive([ref]$ep)
     if ($resp.Length -ge 2 -and $resp[0] -eq 0x01 -and $resp[1] -eq 0x01) { Write-Host "== TURN-Server antwortet lokal auf UDP $turnPort" }
-    else { Write-Warning 'TURN-Server antwortet unerwartet - siehe logs\KMDevStreamTurn.err.log' }
+    else { Write-Warning 'TURN-Server antwortet unerwartet - siehe logs\KMDevStreamMedia.err.log' }
   } catch {
-    Write-Warning 'TURN-Server antwortet lokal nicht - siehe logs\KMDevStreamTurn.err.log'
+    Write-Warning 'TURN-Server antwortet lokal nicht - siehe logs\KMDevStreamMedia.err.log'
   } finally { $udp.Close() }
 }
 
+# Server-Modus: Die SFU meldet sich beim Signaling-Server an (/health -> sfu).
+if ($sfuEnabled) {
+  $sfuOk = $false
+  foreach ($i in 1..10) {
+    try { if ((Invoke-RestMethod "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 3).sfu) { $sfuOk = $true; break } } catch { }
+    Start-Sleep -Seconds 1
+  }
+  if ($sfuOk) { Write-Host '== Server-Modus (SFU) ist mit dem Signaling-Server verbunden' }
+  else { Write-Warning 'Server-Modus (SFU) meldet sich nicht - siehe logs\KMDevStreamMedia.err.log' }
+}
+
 $shown = if ($domain) { $domain } else { '<deine-domain>' }
-if ($turnEnabled) {
+if ($mediaEnabled) {
+  $open = @()
+  if ($turnEnabled) { $open += "TCP $turnPort", "UDP $turnPort", "UDP $relayMin-$relayMax" }
+  if ($sfuEnabled) { $open += "UDP $sfuPort", "TCP $sfuPort" }
   Write-Host ''
-  Write-Host 'TURN: Falls dein Hoster eine eigene Firewall vor dem Server hat, dort freigeben:'
-  Write-Host "  TCP $turnPort, UDP $turnPort und UDP $relayMin-$relayMax  (direkt auf $($t.publicIp), nicht ueber Cloudflare)"
+  Write-Host 'Falls dein Hoster eine eigene Firewall vor dem Server hat, dort freigeben:'
+  Write-Host "  $($open -join ', ')  (direkt auf $($t.publicIp), nicht ueber Cloudflare)"
 }
 Write-Host ''
 if ($caddyPort -ne 443) {
@@ -527,6 +616,18 @@ if ($caddyPort -ne 443) {
   Write-Host '  Regeln -> Origin Rules -> Regel erstellen'
   Write-Host "  Wenn: Hostname ist gleich $shown"
   Write-Host "  Dann: Zielport -> Umschreiben auf $caddyPort"
+  Write-Host ''
+}
+
+# Einladung fuer die App: richtet Server-Adresse und Zugangsschluessel ein
+# (App -> Einstellungen -> "Einladung einfuegen"). Gleiches Format wie
+# renderer/invite.js: base64url von {"s": <server>, "k": <schluessel>}.
+if ($domain) {
+  $inviteJson = [pscustomobject]@{ s = "wss://$domain/ws"; k = "$($cfgObj.accessKey)" } | ConvertTo-Json -Compress
+  $inviteData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($inviteJson)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+  Write-Host 'Einladung fuer die App (enthaelt den Zugangsschluessel - nur an Vertraute geben):'
+  Write-Host "  kmdev-stream://setup/$inviteData"
+  Write-Host '  In der App: Einstellungen -> Einladung einfuegen -> Speichern.'
   Write-Host ''
 }
 Write-Host "Fertig. Test von aussen: https://$shown/health"

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>KM-DEV Stream</title>
+<link rel="stylesheet" href="/watch/watch.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="logo">●</span> KM-DEV Stream</h1>
+</header>
+
+<main>
+  <section id="lobby" class="card">
+    <h2 id="lobbyTitle">Stream ansehen</h2>
+    <label>Stream-Code<input type="text" id="inpCode" maxlength="12" autocomplete="off" placeholder="z. B. ABC234"></label>
+    <label>Dein Name<input type="text" id="inpName" maxlength="40" autocomplete="nickname" placeholder="Gast"></label>
+    <label id="pwRow" hidden>Passwort<input type="password" id="inpPassword" autocomplete="off"></label>
+    <p id="error" class="error"></p>
+    <div class="actions">
+      <button id="btnWatch" class="primary">Im Browser ansehen</button>
+      <a id="lnkApp" class="button">In der App öffnen</a>
+    </div>
+    <p class="muted small">Für die beste Qualität die KM-DEV Stream App nutzen.</p>
+  </section>
+
+  <section id="player" hidden>
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <div id="overlay" class="overlay">Verbinde…</div>
+    </div>
+    <div class="bar">
+      <span id="title" class="title"></span>
+      <span id="stats" class="muted"></span>
+      <span class="spacer"></span>
+      <label class="vol">🔊<input type="range" id="volume" min="0" max="1" step="0.01" value="1"></label>
+      <button id="btnFullscreen" title="Vollbild">⛶</button>
+      <button id="btnLeave" class="danger">Verlassen</button>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/watch/watch.js"></script>
+</body>
+</html>

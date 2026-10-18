@@ -209,3 +209,9 @@ td.bad { color: var(--danger); }
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
   background: #2a3039; border: 1px solid var(--seg-line); padding: 8px 16px; border-radius: 8px; z-index: 20;
 }
+
+/* Einladung / Server-Einstellungen */
+.small { font-size: 12px; margin: -6px 0 0; }
+#serverDetails summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.form-inner { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+#modeBadge:empty { display: none; }

@@ -2,7 +2,8 @@ import {
   RESOLUTIONS, FPS_OPTIONS, AUDIO_BITRATES, PRESETS, PRESET_LABELS,
   BITRATE_MIN, BITRATE_MAX, BITRATE_STEP, matchPreset, videoConstraints
 } from './presets.js';
-import { Signaling, HostSession, ViewerSession } from './rtc.js';
+import { Signaling, HostSession, ViewerSession, SFU_ID } from './rtc.js';
+import { parseInvite, setupInvite, watchUrl } from './invite.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -100,7 +101,11 @@ function initPanel() {
   });
 
   segs.mode = $('#segMode');
-  wireSeg(segs.mode, () => settings.connectionMode, (v) => { settings.connectionMode = v; onSettingsChanged(); });
+  wireSeg(segs.mode, () => settings.connectionMode, (v) => {
+    settings.connectionMode = v;
+    onSettingsChanged();
+    if (host && host.session.mode !== v) toast('Der Verbindungsmodus gilt ab dem nächsten Streamstart.', 3500);
+  });
 
   $('#chkAppAudio').addEventListener('change', async (e) => {
     settings.appAudio = e.target.checked;
@@ -184,8 +189,15 @@ async function onSettingsChanged({ constraints = false, represet = false, room =
 
 function renderUploadEstimate() {
   const el = $('#uploadEst');
-  const n = host ? host.session.peers.size : 0;
   const perViewer = settings.bitrate + (settings.appAudio ? settings.audioBitrate : 0);
+  const serverMode = host ? host.session.mode === 'server' : settings.connectionMode === 'server';
+  if (serverMode) {
+    // Im Server-Modus wird nur einmal hochgeladen, egal wie viele zuschauen.
+    el.textContent = `Upload ca. ${(perViewer / 1000).toFixed(1)} Mbit/s, der Server verteilt an alle`;
+    el.classList.remove('warn');
+    return;
+  }
+  const n = host ? host.session.uploadStreams : 0;
   const total = (perViewer * Math.max(n, 1)) / 1000;
   el.textContent = n
     ? `Upload ca. ${total.toFixed(1)} Mbit/s (${n} × ${(perViewer / 1000).toFixed(1)} Mbit/s)`
@@ -273,6 +285,8 @@ async function startHosting() {
     await sig.connect();
     const res = await sig.request({
       type: 'host',
+      key: settings.accessKey,
+      mode: settings.connectionMode,
       name: displayName(),
       title: settings.title,
       privacy: settings.privacy,
@@ -280,8 +294,13 @@ async function startHosting() {
       viewerLimit: settings.viewerLimit
     }, 'hosted');
 
-    const session = new HostSession({ signaling: sig, iceServers: res.iceServers, stream: captureStream, settings });
+    const session = new HostSession({ signaling: sig, iceServers: res.iceServers, stream: captureStream, settings, mode: res.mode });
     host = { sig, session, room: res.room };
+    sig.on('sfu-lost', () => {
+      if (!host || host.sig !== sig) return;
+      toast('Verbindung zum Medien-Server verloren. Bitte den Stream neu starten.', 6000);
+      stopHosting();
+    });
     session.addEventListener('change', renderViewers);
     sig.on('disconnected', () => {
       if (!host || host.sig !== sig) return;
@@ -290,6 +309,7 @@ async function startHosting() {
     });
 
     $('#roomCode').textContent = res.room;
+    $('#modeBadge').textContent = res.mode === 'server' ? '🗄 Server-Modus' : '👥 P2P';
     $('#roomBox').hidden = false;
     $('#liveBadge').hidden = false;
     $('#btnStart').hidden = true;
@@ -303,6 +323,7 @@ async function startHosting() {
     $('#sendStatus').textContent = '';
     $('#btnStart').disabled = false;
     toast('Start fehlgeschlagen: ' + e.message, 5000);
+    if (e.code === 'bad_key') openAppSettings();
   }
 }
 
@@ -324,7 +345,7 @@ function stopHosting() {
 
 function renderViewers() {
   const list = host ? host.session.viewerList() : [];
-  $('#viewerCount').textContent = list.length;
+  $('#viewerCount').textContent = host ? host.session.viewerCount : 0;
   $('#noViewers').hidden = list.length > 0;
   $('#viewerTable').hidden = list.length === 0;
   $('#viewerTable tbody').innerHTML = list.map((v) => {
@@ -339,7 +360,7 @@ function renderViewers() {
       <td>${s.kbps != null ? `${s.kbps} kbps` : '–'}${s.codec ? ` <span class="muted">${esc(s.codec)}</span>` : ''}</td>
       <td>${s.rtt != null ? `${s.rtt} ms` : '–'}</td>
       <td>${s.relay ? 'TURN' : (s.rtt != null ? 'direkt' : '–')}</td>
-      <td><button class="ghost" data-kick="${esc(v.id)}" title="Entfernen">✕</button></td>
+      <td>${v.server ? '' : `<button class="ghost" data-kick="${esc(v.id)}" title="Entfernen">✕</button>`}</td>
     </tr>`;
   }).join('');
   renderUploadEstimate();
@@ -357,7 +378,7 @@ async function refreshRooms() {
   const sig = new Signaling(settings.serverUrl);
   try {
     await sig.connect();
-    const res = await sig.request({ type: 'list' }, 'rooms');
+    const res = await sig.request({ type: 'list', key: settings.accessKey }, 'rooms');
     box.innerHTML = res.rooms.length
       ? res.rooms.map((r) => `
         <div class="room-item">
@@ -375,10 +396,11 @@ async function refreshRooms() {
   }
 }
 
-async function joinRoom(code, password) {
-  if (viewer || !requireServer()) return;
+async function joinRoom(code, password, serverUrl = settings.serverUrl) {
+  if (viewer) return;
+  if (!serverUrl && !requireServer()) return;
   $('#joinError').textContent = '';
-  const sig = new Signaling(settings.serverUrl);
+  const sig = new Signaling(serverUrl);
   try {
     await sig.connect();
     const res = await sig.request({ type: 'join', room: code, password, name: displayName() }, 'joined');
@@ -400,7 +422,7 @@ async function joinRoom(code, password) {
     session.addEventListener('state', (e) => {
       const st = e.detail;
       $('#playerOverlay').hidden = st === 'connected';
-      if (st === 'failed') $('#playerOverlay').textContent = 'Verbindung fehlgeschlagen (evtl. Firewall/NAT – TURN nötig).';
+      if (st === 'failed') $('#playerOverlay').textContent = 'Verbindung fehlgeschlagen (Firewall/NAT). Probier den Server-Modus oder prüfe den TURN-Server.';
       else if (st === 'disconnected') $('#playerOverlay').textContent = 'Verbindung unterbrochen…';
     });
     session.addEventListener('stats', (e) => {
@@ -411,7 +433,8 @@ async function joinRoom(code, password) {
         s.kbps != null ? `${(s.kbps / 1000).toFixed(1)} Mbit/s` : null,
         s.codec || null,
         s.rtt != null ? `${s.rtt} ms` : null,
-        s.relay ? 'TURN' : null
+        s.relay ? 'TURN' : null,
+        res.mode === 'server' ? 'über Server' : null
       ].filter(Boolean).join(' · ');
     });
     sig.on('host-left', () => { toast('Der Stream wurde beendet.', 4000); leaveRoom(); });
@@ -473,8 +496,32 @@ async function openAppSettings() {
   $('#appVersion').textContent = info.version;
   $('#inpName').value = settings.displayName || '';
   $('#inpServer').value = settings.serverUrl || '';
+  $('#inpAccessKey').value = settings.accessKey || '';
+  $('#inpInvite').value = '';
+  $('#serverDetails').open = false;
+  $('#btnCopyInvite').disabled = !settings.serverUrl;
   renderUpdateUi();
   $('#appSettingsModal').hidden = false;
+  checkServer();
+}
+
+// Zeigt, ob Server und Zugangsschluessel passen und ob der Server-Modus geht.
+async function checkServer() {
+  const el = $('#serverState');
+  if (!settings.serverUrl) { el.textContent = 'Noch kein Server eingerichtet.'; return; }
+  el.textContent = 'Prüfe Server…';
+  const sig = new Signaling(settings.serverUrl);
+  try {
+    await sig.connect();
+    const res = await sig.request({ type: 'info', key: settings.accessKey }, 'info');
+    el.textContent = !res.keyOk
+      ? '⚠ Zugangsschlüssel fehlt oder ist falsch.'
+      : `✓ Server verbunden${res.sfu ? ', Server-Modus verfügbar' : ', nur P2P'}`;
+  } catch (e) {
+    el.textContent = '⚠ ' + e.message;
+  } finally {
+    sig.close();
+  }
 }
 
 // Erlaubt auch die Kurzform "stream.example.com" -> wss://stream.example.com/ws
@@ -498,6 +545,16 @@ function requireServer() {
 }
 
 async function saveAppSettings() {
+  const inviteText = $('#inpInvite').value.trim();
+  if (inviteText) {
+    const inv = parseInvite(inviteText);
+    if (!inv || inv.kind !== 'setup') {
+      toast('Das ist keine gültige Einladung.');
+      return;
+    }
+    $('#inpServer').value = inv.server;
+    $('#inpAccessKey').value = inv.key || '';
+  }
   const server = normalizeServerUrl($('#inpServer').value);
   if (server === null) {
     toast('Ungültige Server-Adresse.');
@@ -509,9 +566,35 @@ async function saveAppSettings() {
   }
   settings.displayName = $('#inpName').value.trim();
   settings.serverUrl = server;
+  settings.accessKey = $('#inpAccessKey').value.trim();
   settings = await window.api.saveSettings(settings);
   $('#appSettingsModal').hidden = true;
   toast('Gespeichert.');
+}
+
+/* ---------- Einladungen (kmdev-stream://...) ---------- */
+
+async function handleInvite(text) {
+  const inv = parseInvite(text);
+  if (!inv) return;
+  if (inv.kind === 'setup') {
+    settings.serverUrl = inv.server;
+    settings.accessKey = inv.key || '';
+    settings = await window.api.saveSettings(settings);
+    toast('Server aus Einladung eingerichtet.', 3500);
+    if (!settings.displayName) openAppSettings();
+  } else if (inv.kind === 'join') {
+    // Wer noch keinen Server hat, uebernimmt den aus dem Link (ohne Schluessel:
+    // zum Zuschauen reicht der Stream-Code).
+    if (!settings.serverUrl) {
+      settings.serverUrl = inv.server;
+      settings = await window.api.saveSettings(settings);
+    }
+    if (viewer) leaveRoom();
+    $('#mainTabs button[data-tab="watch"]').click();
+    $('#inpJoinCode').value = inv.room;
+    joinRoom(inv.room, '', inv.server);
+  }
 }
 
 /* ---------- Verdrahtung ---------- */
@@ -544,12 +627,29 @@ function wire() {
     navigator.clipboard.writeText(host ? host.room : '');
     toast('Code kopiert.');
   });
+  $('#btnCopyLink').addEventListener('click', () => {
+    if (!host) return;
+    navigator.clipboard.writeText(watchUrl(settings.serverUrl, host.room));
+    toast('Link kopiert – öffnet den Stream im Browser oder in der App.', 3500);
+  });
+  $('#btnCopyInvite').addEventListener('click', () => {
+    if (!settings.serverUrl) return;
+    navigator.clipboard.writeText(setupInvite(settings.serverUrl, settings.accessKey));
+    toast('Einladung kopiert. Enthält den Zugangsschlüssel – nur an Vertraute geben.', 4500);
+  });
+  window.api.onInvite(handleInvite);
   $('#viewerTable').addEventListener('click', (e) => {
     const b = e.target.closest('[data-kick]');
-    if (b && host) host.session.kick(b.dataset.kick);
+    if (b && host && b.dataset.kick !== SFU_ID) host.session.kick(b.dataset.kick);
   });
 
-  $('#btnJoin').addEventListener('click', () => joinRoom($('#inpJoinCode').value.trim(), $('#inpJoinPassword').value));
+  $('#btnJoin').addEventListener('click', () => {
+    const value = $('#inpJoinCode').value.trim();
+    // Eingefuegter Link statt Code? Dann wie eine Einladung behandeln.
+    const inv = parseInvite(value);
+    if (inv) handleInvite(value);
+    else joinRoom(value, $('#inpJoinPassword').value);
+  });
   $('#inpJoinCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
   $('#inpJoinPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
   $('#btnRefreshRooms').addEventListener('click', refreshRooms);

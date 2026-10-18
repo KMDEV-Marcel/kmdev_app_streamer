@@ -3,10 +3,16 @@
  *
  * Aufgaben:
  *  1. WebSocket-Signaling (/ws): Raeume anlegen/betreten, SDP/ICE zwischen Host
- *     und Zuschauern weiterreichen. Die Mediendaten selbst laufen P2P und
- *     beruehren diesen Server nicht.
- *  2. ICE-Server-Liste ausgeben, inkl. zeitlich begrenzter TURN-Zugangsdaten
+ *     und Zuschauern weiterreichen. Im P2P-Modus laufen die Mediendaten direkt
+ *     zwischen den Teilnehmern.
+ *  2. Server-Modus: Der Medien-Server (media/, kmdev-media.exe) haengt sich
+ *     ueber /media an und tritt als virtueller Teilnehmer "sfu" auf.
+ *  3. ICE-Server-Liste ausgeben, inkl. zeitlich begrenzter TURN-Zugangsdaten
  *     (TURN-REST-Schema, kompatibel zu coturn/eturnal "use-auth-secret").
+ *  4. Zuschauen im Browser (/watch).
+ *
+ * Wer streamen oder die Stream-Liste sehen will, braucht den Zugangsschluessel
+ * (accessKey). Zum Zuschauen reicht der Stream-Code.
  *
  * TLS terminiert der vorgeschaltete Reverse-Proxy (Caddy); dieser Prozess
  * lauscht standardmaessig nur auf 127.0.0.1.
@@ -24,7 +30,9 @@ const DEFAULTS = {
   host: '127.0.0.1',
   port: 8443,
   stunServers: ['stun:stun.l.google.com:19302'],
+  accessKey: '',
   turn: { enabled: false, urls: [], host: '', publicIp: '', listenPort: 3478, secret: '', ttlSeconds: 86400 },
+  sfu: { enabled: false, secret: '' },
   maxRoomsPerIp: 5,
   maxViewersHardLimit: 50
 };
@@ -37,7 +45,11 @@ function loadConfig() {
   } else {
     log(`Keine config.json gefunden (${CONFIG_PATH}) – nutze Standardwerte.`);
   }
-  const cfg = { ...DEFAULTS, ...file, turn: { ...DEFAULTS.turn, ...(file.turn || {}) } };
+  const cfg = {
+    ...DEFAULTS, ...file,
+    turn: { ...DEFAULTS.turn, ...(file.turn || {}) },
+    sfu: { ...DEFAULTS.sfu, ...(file.sfu || {}) }
+  };
   if (process.env.PORT) cfg.port = Number(process.env.PORT);
   if (process.env.HOST) cfg.host = process.env.HOST;
   return cfg;
@@ -108,6 +120,27 @@ function passwordMatches(room, pw) {
   return crypto.timingSafeEqual(given, room.passwordHash);
 }
 
+// Ohne eingetragenen accessKey ist der Server offen (lokales Testen).
+function keyMatches(key) {
+  if (!cfg.accessKey) return true;
+  return crypto.timingSafeEqual(hashPassword(key || ''), hashPassword(cfg.accessKey));
+}
+
+// Bremse gegen Durchprobieren von Stream-Codes/Passwoertern:
+// max. 20 Fehlversuche pro Adresse in 10 Minuten.
+const failedJoins = new Map(); // ip -> { count, since }
+function joinBlocked(ip) {
+  const f = failedJoins.get(ip);
+  if (!f) return false;
+  if (Date.now() - f.since > 10 * 60 * 1000) { failedJoins.delete(ip); return false; }
+  return f.count >= 20;
+}
+function noteFailedJoin(ip) {
+  const f = failedJoins.get(ip);
+  if (!f || Date.now() - f.since > 10 * 60 * 1000) failedJoins.set(ip, { count: 1, since: Date.now() });
+  else f.count++;
+}
+
 function clampLimit(n) {
   n = Math.max(0, Math.floor(Number(n) || 0));
   // 0 = unbegrenzt, aber nie ueber das harte Server-Limit.
@@ -159,6 +192,9 @@ function peerWs(room, peerId) {
 
 function handleHost(ws, c, msg) {
   if (c.room) return sendError(ws, 'busy', 'Bereits in einem Raum.');
+  if (!keyMatches(msg.key)) return sendError(ws, 'bad_key', 'Zugangsschlüssel fehlt oder ist falsch.');
+  const serverMode = msg.mode === 'server';
+  if (serverMode && !mediaWs) return sendError(ws, 'no_sfu', 'Server-Modus ist auf diesem Server nicht verfügbar.');
   let ownRooms = 0;
   for (const r of rooms.values()) if (r.hostIp === c.ip) ownRooms++;
   if (ownRooms >= cfg.maxRoomsPerIp) return sendError(ws, 'too_many_rooms', 'Zu viele aktive Streams von dieser Adresse.');
@@ -174,14 +210,18 @@ function handleHost(ws, c, msg) {
     passwordHash: msg.password ? hashPassword(msg.password) : null,
     viewerLimit: clampLimit(msg.viewerLimit),
     viewers: new Map(), // peerId -> { ws, name }
+    mode: serverMode ? 'server' : 'p2p',
     createdAt: Date.now()
   };
   rooms.set(code, room);
   c.room = code;
   c.role = 'host';
   c.name = room.hostName;
-  log(`Raum ${code} erstellt von ${c.ip} (${room.privacy}, Limit ${room.viewerLimit})`);
-  send(ws, { type: 'hosted', room: code, peerId: c.id, iceServers: iceServersFor(c.id), viewerLimit: room.viewerLimit });
+  log(`Raum ${code} erstellt von ${c.ip} (${room.mode}, ${room.privacy}, Limit ${room.viewerLimit})`);
+  send(ws, {
+    type: 'hosted', room: code, peerId: c.id, mode: room.mode,
+    iceServers: iceServersFor(c.id), viewerLimit: room.viewerLimit
+  });
 }
 
 function handleHostUpdate(ws, c, msg) {
@@ -196,10 +236,11 @@ function handleHostUpdate(ws, c, msg) {
 
 function handleJoin(ws, c, msg) {
   if (c.room) return sendError(ws, 'busy', 'Bereits in einem Raum.');
+  if (joinBlocked(c.ip)) return sendError(ws, 'rate_limited', 'Zu viele Fehlversuche. Bitte in ein paar Minuten erneut versuchen.');
   const code = String(msg.room || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const room = rooms.get(code);
-  if (!room) return sendError(ws, 'not_found', 'Stream nicht gefunden.');
-  if (!passwordMatches(room, msg.password)) return sendError(ws, 'bad_password', 'Falsches Passwort.');
+  if (!room) { noteFailedJoin(c.ip); return sendError(ws, 'not_found', 'Stream nicht gefunden.'); }
+  if (!passwordMatches(room, msg.password)) { noteFailedJoin(c.ip); return sendError(ws, 'bad_password', 'Falsches Passwort.'); }
   if (room.viewers.size >= room.viewerLimit) return sendError(ws, 'full', 'Zuschauerbegrenzung erreicht.');
 
   c.room = code;
@@ -212,17 +253,25 @@ function handleJoin(ws, c, msg) {
     type: 'joined',
     room: code,
     peerId: c.id,
-    hostId: room.hostId,
+    // Im Server-Modus ist die SFU der Gegenueber, nicht der Host.
+    hostId: room.mode === 'server' ? SFU_ID : room.hostId,
     hostName: room.hostName,
     title: room.title,
+    mode: room.mode,
     iceServers: iceServersFor(c.id)
   });
   send(room.hostWs, { type: 'viewer-joined', peerId: c.id, name: c.name, viewers: room.viewers.size });
+  if (room.mode === 'server') toMedia({ type: 'viewer-join', room: code, peer: c.id });
 }
 
 function handleSignal(ws, c, msg) {
   const room = rooms.get(c.room);
   if (!room) return;
+  if (room.mode === 'server') {
+    // Server-Modus: Host und Zuschauer sprechen nur mit der SFU.
+    if (msg.to === SFU_ID) toMedia({ type: 'signal', room: c.room, peer: c.id, role: c.role, data: msg.data });
+    return;
+  }
   // Signale nur zwischen Host und Zuschauern desselben Raums – Zuschauer
   // untereinander duerfen sich nicht direkt adressieren.
   if (c.role === 'viewer' && msg.to !== room.hostId) return;
@@ -257,11 +306,64 @@ function leave(ws) {
       if (vc) { vc.room = null; vc.role = null; }
     }
     rooms.delete(code);
+    if (room.mode === 'server') toMedia({ type: 'room-close', room: code });
     log(`Raum ${code} beendet`);
   } else if (role === 'viewer') {
     room.viewers.delete(c.id);
     send(room.hostWs, { type: 'viewer-left', peerId: c.id, viewers: room.viewers.size });
+    if (room.mode === 'server') toMedia({ type: 'peer-leave', room: code, peer: c.id });
   }
+}
+
+/* ---------- Medien-Server (SFU) ---------- */
+
+const SFU_ID = 'sfu';
+let mediaWs = null;
+
+function toMedia(msg) {
+  send(mediaWs, msg);
+}
+
+// Nachricht der SFU an einen Teilnehmer weiterreichen.
+function fromMedia(raw) {
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return; }
+  if (msg.type !== 'signal') return;
+  const room = rooms.get(msg.room);
+  if (!room || room.mode !== 'server') return;
+  send(peerWs(room, msg.peer), { type: 'signal', from: SFU_ID, data: msg.data });
+}
+
+function onMediaConnection(ws) {
+  if (mediaWs) mediaWs.terminate();
+  mediaWs = ws;
+  log('Medien-Server (SFU) verbunden');
+  ws.on('message', fromMedia);
+  ws.on('close', () => {
+    if (mediaWs !== ws) return;
+    mediaWs = null;
+    log('Medien-Server (SFU) getrennt');
+    // Die SFU hat alle Verbindungen verloren -> Server-Modus-Raeume beenden,
+    // damit Host und Zuschauer nicht vor einem schwarzen Bild sitzen.
+    for (const [code, room] of rooms) {
+      if (room.mode !== 'server') continue;
+      send(room.hostWs, { type: 'sfu-lost' });
+      leave(room.hostWs);
+      log(`Raum ${code} beendet (SFU getrennt)`);
+    }
+  });
+}
+
+function mediaAuthorized(req) {
+  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+  // Ueber Caddy weitergereichte Anfragen kommen auch von 127.0.0.1, tragen
+  // aber Proxy-Header -> von aussen ist /media nie erreichbar.
+  const proxied = req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'];
+  const token = String(req.headers.authorization || '').replace(/^Bearer /, '');
+  if (!local || proxied || !cfg.sfu.enabled || String(cfg.sfu.secret).length < 16) return false;
+  const a = crypto.createHash('sha256').update(token).digest();
+  const b = crypto.createHash('sha256').update(String(cfg.sfu.secret)).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 const handlers = {
@@ -271,7 +373,12 @@ const handlers = {
   signal: handleSignal,
   kick: handleKick,
   leave: (ws) => leave(ws),
-  list: (ws) => send(ws, { type: 'rooms', rooms: publicRoomList() }),
+  list: (ws, c, msg) => {
+    if (!keyMatches(msg.key)) return sendError(ws, 'bad_key', 'Zugangsschlüssel fehlt oder ist falsch.');
+    send(ws, { type: 'rooms', rooms: publicRoomList() });
+  },
+  // Was kann dieser Server? (fuer die App-Einstellungen)
+  info: (ws, c, msg) => send(ws, { type: 'info', keyOk: keyMatches(msg.key), sfu: !!mediaWs }),
   ping: (ws) => send(ws, { type: 'pong' })
 };
 
@@ -281,18 +388,60 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size, clients: clients.size }));
+    res.end(JSON.stringify({ ok: true, rooms: rooms.size, clients: clients.size, sfu: !!mediaWs }));
     return;
   }
+  if (serveWeb(url.pathname, res)) return;
   res.writeHead(404).end('Not found');
 });
+
+/* ---------- Zuschauen im Browser (/watch) ---------- */
+
+// Kleine feste Dateiliste statt Verzeichnis-Freigabe: rtc.js kommt direkt aus
+// der App (renderer/), damit Browser und App dieselbe WebRTC-Logik nutzen.
+const WEB_FILES = {
+  '/watch': ['web/watch.html', 'text/html; charset=utf-8'],
+  '/watch/': ['web/watch.html', 'text/html; charset=utf-8'],
+  '/watch/watch.js': ['web/watch.js', 'text/javascript; charset=utf-8'],
+  '/watch/watch.css': ['web/watch.css', 'text/css; charset=utf-8'],
+  '/watch/rtc.js': ['../renderer/rtc.js', 'text/javascript; charset=utf-8'],
+  '/watch/invite.js': ['../renderer/invite.js', 'text/javascript; charset=utf-8']
+};
+
+function serveWeb(pathname, res) {
+  const entry = WEB_FILES[pathname];
+  if (!entry) return false;
+  fs.readFile(path.join(__dirname, entry[0]), (err, data) => {
+    if (err) { res.writeHead(404).end('Not found'); return; }
+    res.writeHead(200, {
+      'Content-Type': entry[1],
+      'Cache-Control': 'no-cache',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src blob: mediastream:; img-src 'self' data:; frame-ancestors 'none'"
+    });
+    res.end(data);
+  });
+  return true;
+}
 
 /* ---------- WebSocket ---------- */
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const mediaWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
 server.on('upgrade', (req, socket, head) => {
-  if (new URL(req.url, 'http://x').pathname !== '/ws') {
+  const pathname = new URL(req.url, 'http://x').pathname;
+  if (pathname === '/media') {
+    if (!mediaAuthorized(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    mediaWss.handleUpgrade(req, socket, head, onMediaConnection);
+    return;
+  }
+  if (pathname !== '/ws') {
     socket.destroy();
     return;
   }

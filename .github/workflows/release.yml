@@ -35,26 +35,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # TURN-Server fuer den Windows-Server, haengt als Asset am selben Release.
-      # install-server.ps1 laedt ihn von dort und prueft die SHA256.
+      # Medien-Server (TURN + Server-Modus) fuer den Windows-Server, haengt als
+      # Asset am selben Release. install-server.ps1 laedt ihn von dort und
+      # prueft die SHA256.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: turn/go.mod
-          cache-dependency-path: turn/go.sum
+          go-version-file: media/go.mod
+          cache-dependency-path: media/go.sum
 
-      - name: TURN-Server bauen
-        working-directory: turn
+      - name: Medien-Server bauen
+        working-directory: media
         shell: pwsh
         env:
           CGO_ENABLED: '0'
           GOOS: windows
           GOARCH: amd64
         run: |
-          go build -trimpath -ldflags "-s -w" -o kmdev-turn.exe .
-          (Get-FileHash kmdev-turn.exe -Algorithm SHA256).Hash.ToLower() + '  kmdev-turn.exe' | Set-Content -NoNewline kmdev-turn.exe.sha256
+          go build -trimpath -ldflags "-s -w" -o kmdev-media.exe .
+          (Get-FileHash kmdev-media.exe -Algorithm SHA256).Hash.ToLower() + '  kmdev-media.exe' | Set-Content -NoNewline kmdev-media.exe.sha256
 
-      - name: TURN-Server ans Release haengen
-        working-directory: turn
-        run: gh release upload ${{ github.ref_name }} kmdev-turn.exe kmdev-turn.exe.sha256 --clobber
+      - name: Medien-Server ans Release haengen
+        working-directory: media
+        run: gh release upload ${{ github.ref_name }} kmdev-media.exe kmdev-media.exe.sha256 --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

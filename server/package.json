@@ -1,0 +1,15 @@
+{
+  "name": "kmdev-stream-server",
+  "version": "1.0.0",
+  "description": "Signaling-Server fuer KMDev Stream + Auslieferung der Auto-Updates",
+  "main": "server.js",
+  "private": true,
+  "author": "Marcel Kari",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

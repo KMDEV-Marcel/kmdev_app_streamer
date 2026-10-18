@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src ws: wss:; media-src 'self' blob: mediastream:;">
+<title>KMDev Stream</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="logo">●</span> KMDev Stream</h1>
+  <nav class="tabs" id="mainTabs">
+    <button data-tab="send" class="active">Senden</button>
+    <button data-tab="watch">Zuschauen</button>
+  </nav>
+  <div class="spacer"></div>
+  <button id="updateBadge" class="update-badge" hidden></button>
+  <button id="btnSettings" class="ghost" title="Einstellungen">⚙</button>
+</header>
+
+<div id="updateBanner" class="banner" hidden>
+  <span id="updateBannerText"></span>
+  <button id="btnInstallUpdate" class="primary">Jetzt neu starten</button>
+</div>
+
+<main>
+  <!-- ================= Senden ================= -->
+  <section id="tab-send" class="tab active">
+    <div class="stage">
+      <div class="preview-wrap">
+        <video id="preview" autoplay muted playsinline></video>
+        <div id="previewEmpty" class="preview-empty">
+          <p>Keine Quelle gewählt</p>
+          <button id="btnPickSource" class="primary">Bildschirm oder Fenster wählen</button>
+        </div>
+        <div id="liveBadge" class="live-badge" hidden>LIVE</div>
+      </div>
+
+      <div class="stage-bar">
+        <button id="btnChangeSource" disabled>Quelle ändern</button>
+        <div class="spacer"></div>
+        <span id="sendStatus" class="muted"></span>
+        <button id="btnStart" class="primary" disabled>Stream starten</button>
+        <button id="btnStop" class="danger" hidden>Stream beenden</button>
+      </div>
+
+      <div id="roomBox" class="room-box" hidden>
+        <div>
+          <div class="label">Stream-Code</div>
+          <div class="room-code" id="roomCode">------</div>
+        </div>
+        <button id="btnCopyCode">Code kopieren</button>
+        <div class="spacer"></div>
+        <div class="upload-est" id="uploadEst"></div>
+      </div>
+
+      <div class="viewers">
+        <h3>Zuschauer <span id="viewerCount" class="pill">0</span></h3>
+        <table id="viewerTable">
+          <thead><tr><th>Name</th><th>Status</th><th>Auflösung</th><th>FPS</th><th>Bitrate</th><th>Ping</th><th>Weg</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="noViewers" class="muted">Noch keine Zuschauer.</p>
+      </div>
+    </div>
+
+    <aside class="panel" id="settingsPanel">
+      <div class="row">
+        <label><i class="help" title="Setzt Auflösung, FPS und Bitrate auf passende Werte. „Präsentation“ = scharfer Text, wenige Bilder pro Sekunde.">?</i>Voreinstellung</label>
+        <div class="seg" id="segPreset"></div>
+      </div>
+      <div class="row">
+        <label><i class="help" title="Überträgt den Systemton mit. Auswahl einzelner Apps folgt in einer späteren Version.">?</i>Anwendungsaudio</label>
+        <label class="switch"><input type="checkbox" id="chkAppAudio"><span></span></label>
+      </div>
+      <div class="row">
+        <label><i class="help" title="Öffentlich: in der Stream-Liste sichtbar. Privat: nur mit Code (und optional Passwort). Kontakte: folgt mit Benutzerkonten.">?</i>Privatsphäre</label>
+        <div class="seg" id="segPrivacy">
+          <button data-v="public">🌐 Öffentlich</button>
+          <button data-v="contacts" disabled title="Folgt mit Benutzerkonten">👥 Kontakte</button>
+          <button data-v="private">🔒 Privat</button>
+        </div>
+      </div>
+      <div class="row">
+        <label><i class="help" title="Optional. Zuschauer müssen es beim Beitreten eingeben.">?</i>Passwort</label>
+        <input type="password" id="inpPassword" placeholder="kein Passwort" autocomplete="new-password">
+      </div>
+      <div class="row">
+        <label><i class="help" title="Wird in der öffentlichen Liste angezeigt.">?</i>Titel</label>
+        <input type="text" id="inpTitle" maxlength="80" placeholder="z. B. Code-Review">
+      </div>
+
+      <button class="section-toggle" id="toggleAdvanced">Erweiterte Einstellungen <span>⌄</span></button>
+      <div id="advanced">
+        <div class="row">
+          <label><i class="help" title="Maximale Auflösung. „Quelle“ = native Auflösung ohne Skalierung.">?</i>Auflösung</label>
+          <div class="seg" id="segResolution"></div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="Bilder pro Sekunde">?</i>FPS</label>
+          <div class="seg" id="segFps"></div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="Maximale Video-Bitrate pro Zuschauer">?</i>Bitrate</label>
+          <div class="stepper">
+            <button class="minus" id="bitrateMinus">−</button>
+            <input type="number" id="inpBitrate" step="500">
+            <span>Kbps</span>
+            <button class="plus" id="bitratePlus">+</button>
+          </div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="Opus, Stereo">?</i>Audio-Bitrate [Kbps]</label>
+          <div class="seg" id="segAudioBitrate"></div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="H.264 nutzt meist die Hardware (wenig CPU). VP9/AV1 liefern bei gleicher Bitrate mehr Qualität, kosten aber mehr CPU.">?</i>Codec</label>
+          <div class="seg" id="segCodec">
+            <button data-v="h264">H.264</button>
+            <button data-v="vp9">VP9</button>
+            <button data-v="av1">AV1</button>
+          </div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="0 = unbegrenzt (bis zum Server-Limit). Im P2P-Modus braucht jeder Zuschauer eigene Upload-Bandbreite.">?</i>Zuschauerbegrenzung</label>
+          <div class="stepper">
+            <button class="minus" id="limitMinus">−</button>
+            <input type="number" id="inpLimit" min="0" max="50">
+            <button class="plus" id="limitPlus">+</button>
+          </div>
+        </div>
+        <div class="row">
+          <label><i class="help" title="P2P: direkt zu jedem Zuschauer. Server: einmal hochladen, der Server verteilt (folgt in Stufe 2).">?</i>Verbindungsmodus</label>
+          <div class="seg" id="segMode">
+            <button data-v="p2p">👥 P2P</button>
+            <button data-v="server" disabled title="Folgt in Ausbaustufe 2">🗄 Server</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ================= Zuschauen ================= -->
+  <section id="tab-watch" class="tab">
+    <div id="watchLobby" class="lobby">
+      <div class="join-box">
+        <h2>Stream beitreten</h2>
+        <input type="text" id="inpJoinCode" placeholder="Stream-Code" maxlength="8" autocomplete="off">
+        <input type="password" id="inpJoinPassword" placeholder="Passwort (falls nötig)" autocomplete="off">
+        <button id="btnJoin" class="primary">Beitreten</button>
+        <p id="joinError" class="error"></p>
+      </div>
+      <div class="public-list">
+        <div class="list-head">
+          <h2>Öffentliche Streams</h2>
+          <button id="btnRefreshRooms">Aktualisieren</button>
+        </div>
+        <div id="roomList"></div>
+      </div>
+    </div>
+
+    <div id="player" class="player" hidden>
+      <video id="remoteVideo" autoplay playsinline></video>
+      <div class="player-bar">
+        <span id="playerTitle"></span>
+        <div class="spacer"></div>
+        <span id="playerStats" class="muted mono"></span>
+        <input type="range" id="volume" min="0" max="1" step="0.01" value="1" title="Lautstärke">
+        <button id="btnFullscreen" title="Vollbild">⛶</button>
+        <button id="btnLeave" class="danger">Verlassen</button>
+      </div>
+      <div id="playerOverlay" class="player-overlay">Verbinde…</div>
+    </div>
+  </section>
+</main>
+
+<!-- Quellen-Auswahl -->
+<div id="sourceModal" class="modal" hidden>
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h2>Was möchtest du teilen?</h2>
+      <nav class="tabs" id="sourceTabs">
+        <button data-type="screen" class="active">Bildschirme</button>
+        <button data-type="window">Fenster</button>
+      </nav>
+      <button class="ghost" data-close>✕</button>
+    </div>
+    <div id="sourceGrid" class="source-grid"></div>
+  </div>
+</div>
+
+<!-- Allgemeine Einstellungen -->
+<div id="appSettingsModal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Einstellungen</h2>
+      <button class="ghost" data-close>✕</button>
+    </div>
+    <div class="form">
+      <label>Anzeigename<input type="text" id="inpName" maxlength="40"></label>
+      <label>Server-Adresse<input type="text" id="inpServer" placeholder="z. B. stream.meinedomain.de"></label>
+      <div class="about">
+        <span>Version <b id="appVersion"></b></span>
+        <span id="updateStateText" class="muted"></span>
+        <button id="btnCheckUpdate">Nach Updates suchen</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnSaveAppSettings" class="primary">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

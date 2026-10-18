@@ -1,0 +1,10 @@
+node_modules/
+dist/
+
+# Server: lokale Konfiguration, Zertifikate, Logs
+server/config.json
+server/Caddyfile
+server/certs/
+server/logs/
+
+*.log

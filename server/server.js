@@ -54,9 +54,12 @@ const cfg = loadConfig();
 // TURN-Adressen: explizit aus turn.urls, sonst aus host bzw. publicIp gebaut.
 // Der TURN-Server darf NICHT hinter dem Cloudflare-Proxy liegen (UDP), daher
 // standardmaessig direkt die oeffentliche IP.
+// Platzhalter aus alten Vorlagen (turn.example.com) werden ignoriert.
+const isPlaceholder = s => /example\./.test(String(s));
 function turnUrls() {
-  if (cfg.turn.urls && cfg.turn.urls.length) return cfg.turn.urls;
-  const host = cfg.turn.host || cfg.turn.publicIp;
+  const explicit = (cfg.turn.urls || []).filter(u => !isPlaceholder(u));
+  if (explicit.length) return explicit;
+  const host = [cfg.turn.host, cfg.turn.publicIp].find(h => h && !isPlaceholder(h));
   if (!host) return [];
   const port = cfg.turn.listenPort || 3478;
   return [`turn:${host}:${port}?transport=udp`, `turn:${host}:${port}?transport=tcp`];

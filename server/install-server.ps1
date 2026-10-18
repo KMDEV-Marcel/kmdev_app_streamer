@@ -225,6 +225,17 @@ if ($turnEnabled) {
     Write-Host '   TURN-Secret erzeugt.'
     $cfgChanged = $true
   }
+  # Platzhalter aus alten Vorlagen (turn.example.com) entfernen: turn.urls hat
+  # Vorrang vor der erkannten IP und wuerde Clients ins Leere schicken.
+  if ($t.PSObject.Properties['urls']) {
+    $realUrls = @($t.urls | Where-Object { "$_" -notmatch 'example\.' })
+    if ($realUrls.Count -ne @($t.urls).Count) {
+      Write-Host '   Platzhalter in turn.urls entfernt.'
+      if ($realUrls.Count) { $t.urls = $realUrls } else { $t.PSObject.Properties.Remove('urls') }
+      $cfgChanged = $true
+    }
+  }
+  if ("$($t.host)" -match 'example\.') { Set-Prop $t 'host' ''; $cfgChanged = $true }
   # Gueltige IPv4? (TryParse allein akzeptiert auch Kurzformen wie "84".)
   function Test-IPv4($s) {
     $ip = $null

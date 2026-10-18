@@ -17,12 +17,13 @@ stream.example.com:443 {
 	# Relativ zum Server-Ordner (der Dienst startet mit diesem Arbeitsverzeichnis).
 	tls certs/origin.pem certs/origin.key
 
-	# Signaling (WebSocket) + Health-Check an Node weiterreichen.
+	# Signaling (WebSocket) + Health-Check an Node weiterreichen. Den Port setzt
+	# install-server.ps1 passend zu config.json (Umgebungsvariable).
 	handle /ws {
-		reverse_proxy 127.0.0.1:8443
+		reverse_proxy 127.0.0.1:{$KMDEV_SIGNAL_PORT:8443}
 	}
 	handle /health {
-		reverse_proxy 127.0.0.1:8443
+		reverse_proxy 127.0.0.1:{$KMDEV_SIGNAL_PORT:8443}
 	}
 
 	handle {

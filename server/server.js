@@ -32,7 +32,8 @@ const DEFAULTS = {
 function loadConfig() {
   let file = {};
   if (fs.existsSync(CONFIG_PATH)) {
-    file = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    // BOM entfernen – Windows-Editoren/PowerShell schreiben gern eins davor.
+    file = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, ''));
   } else {
     log(`Keine config.json gefunden (${CONFIG_PATH}) – nutze Standardwerte.`);
   }
@@ -326,6 +327,19 @@ setInterval(() => {
     ws.ping();
   }
 }, 20000);
+
+server.on('error', (err) => {
+  if (err.code === 'EACCES') {
+    log(`Port ${cfg.port} ist gesperrt (unter Windows meist von Hyper-V/WSL reserviert, ` +
+      `siehe "netsh interface ipv4 show excludedportrange protocol=tcp"). ` +
+      `Anderen Port in config.json eintragen oder install-server.ps1 erneut ausfuehren.`);
+  } else if (err.code === 'EADDRINUSE') {
+    log(`Port ${cfg.port} wird bereits von einem anderen Programm benutzt. Anderen Port in config.json eintragen.`);
+  } else {
+    log('Server-Fehler', err);
+  }
+  process.exit(1);
+});
 
 server.listen(cfg.port, cfg.host, () => {
   log(`KMDev Stream Server laeuft auf http://${cfg.host}:${cfg.port} (WS: /ws)`);

@@ -99,6 +99,61 @@ foreach ($f in 'origin.pem', 'origin.key') {
 }
 New-Item -ItemType Directory -Force $bin, $svcDir, $logs | Out-Null
 
+# ---------- Port fuer den Signaling-Server ----------
+# Hyper-V/WSL/WinNAT reservieren Portbereiche ("excludedportrange"); ein Port
+# darin liefert EACCES, selbst als Administrator. Deshalb pruefen und bei
+# Bedarf automatisch einen freien Port waehlen und in config.json eintragen.
+
+function Get-ExcludedRanges {
+  $ranges = @()
+  foreach ($line in (& netsh interface ipv4 show excludedportrange protocol=tcp)) {
+    if ($line -match '^\s*(\d+)\s+(\d+)') { $ranges += ,@([int]$Matches[1], [int]$Matches[2]) }
+  }
+  return ,$ranges
+}
+
+function Test-PortUsable([int]$port, $excluded) {
+  foreach ($r in $excluded) { if ($port -ge $r[0] -and $port -le $r[1]) { return $false } }
+  $l = [System.Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+  try { $l.Start(); return $true } catch { return $false } finally { try { $l.Stop() } catch {} }
+}
+
+$configPath = Join-Path $here 'config.json'
+$configText = [IO.File]::ReadAllText($configPath)
+$port = 8443
+if ($configText -match '"port"\s*:\s*(\d+)') { $port = [int]$Matches[1] }
+
+# Eigener Dienst wuerde den Port sonst selbst belegen.
+if (Get-Service 'KMDevStream' -ErrorAction SilentlyContinue) { Stop-Service 'KMDevStream' -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
+
+$excluded = Get-ExcludedRanges
+if (-not (Test-PortUsable $port $excluded)) {
+  $old = $port
+  $port = @(8443, 3080, 4080, 6080, 8180, 9180, 10080, 18443, 28443) |
+    Where-Object { Test-PortUsable $_ $excluded } | Select-Object -First 1
+  if (-not $port) { throw "Kein freier Port gefunden. Bitte in config.json einen freien Port eintragen (siehe: netsh interface ipv4 show excludedportrange protocol=tcp)." }
+  Write-Host "   Port $old ist reserviert oder belegt -> nutze Port $port"
+  if ($configText -match '"port"\s*:\s*\d+') {
+    $configText = $configText -replace '"port"\s*:\s*\d+', "`"port`": $port"
+  } else {
+    $configText = $configText -replace '^\s*\{', "{`r`n  `"port`": $port,"
+  }
+  # Ohne BOM schreiben, sonst scheitert JSON.parse in Node.
+  [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
+}
+Write-Host "== Signaling-Port: $port"
+
+# Caddy bekommt den Port als Umgebungsvariable. Aeltere Caddyfiles mit fest
+# eingetragenem 127.0.0.1:8443 werden einmalig umgestellt.
+$caddyfilePath = Join-Path $here 'Caddyfile'
+$caddyText = [IO.File]::ReadAllText($caddyfilePath)
+if ($caddyText -match 'reverse_proxy\s+127\.0\.0\.1:\d+') {
+  $caddyText = $caddyText -replace 'reverse_proxy\s+127\.0\.0\.1:\d+', 'reverse_proxy 127.0.0.1:{$KMDEV_SIGNAL_PORT:8443}'
+  [IO.File]::WriteAllText($caddyfilePath, $caddyText, [Text.UTF8Encoding]::new($false))
+  Write-Host '   Caddyfile auf {$KMDEV_SIGNAL_PORT} umgestellt.'
+}
+$env:KMDEV_SIGNAL_PORT = "$port"
+
 # ---------- Downloads ----------
 
 function Get-Verified($url, $target, $algorithm, $expected) {
@@ -170,7 +225,8 @@ Write-Host '== Caddyfile ok'
 
 function Esc($s) { [Security.SecurityElement]::Escape($s) }
 
-function Install-Svc($id, $display, $description, $exe, $arguments) {
+function Install-Svc($id, $display, $description, $exe, $arguments, $envVars = @{}) {
+  $envXml = ($envVars.GetEnumerator() | ForEach-Object { "  <env name=`"$(Esc $_.Key)`" value=`"$(Esc $_.Value)`"/>" }) -join "`r`n"
   $svcExe = Join-Path $svcDir "$id.exe"
   $svcXml = Join-Path $svcDir "$id.xml"
 
@@ -191,6 +247,7 @@ function Install-Svc($id, $display, $description, $exe, $arguments) {
   <executable>$(Esc $exe)</executable>
   <arguments>$(Esc $arguments)</arguments>
   <workingdirectory>$(Esc $here)</workingdirectory>
+$envXml
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="5 sec"/>
   <onfailure action="restart" delay="30 sec"/>
@@ -214,7 +271,7 @@ Write-Host '== Dienste'
 Install-Svc 'KMDevStream' 'KMDev Stream Signaling' 'WebSocket-Signaling fuer KMDev Stream' `
   $Node "`"$(Join-Path $here 'server.js')`""
 Install-Svc 'KMDevStreamCaddy' 'KMDev Stream Caddy (HTTPS)' 'HTTPS-Reverse-Proxy fuer KMDev Stream' `
-  $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile"
+  $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile" @{ KMDEV_SIGNAL_PORT = "$port" }
 
 # ---------- Firewall ----------
 
@@ -236,7 +293,7 @@ if ($OpenTurnPorts) {
 
 Start-Sleep -Seconds 2
 try {
-  $h = Invoke-RestMethod 'http://127.0.0.1:8443/health' -UseBasicParsing -TimeoutSec 5
+  $h = Invoke-RestMethod "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 5
   Write-Host "== Signaling-Server antwortet lokal: ok=$($h.ok)"
 } catch {
   Write-Warning 'Signaling-Server antwortet lokal nicht - siehe logs\KMDevStream.err.log'

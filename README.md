@@ -102,18 +102,29 @@ braucht UDP und einen **eigenen DNS-Eintrag ohne Proxy** (graue Wolke).
 
 ### Windows Server
 
-1. **Node.js LTS**, **NSSM** (https://nssm.cc) und **Caddy** (https://caddyserver.com) installieren.
-2. Den Ordner `server` auf den Server kopieren, z. B. nach `C:\kmdev-stream\server`.
-3. Als Administrator ausführen:
+1. **Node.js LTS** installieren (https://nodejs.org, .msi). Mehr musst du nicht installieren.
+2. Den Ordner `server` auf eine lokale Platte des Servers kopieren (kein Netzlaufwerk).
+   Die beiden Origin-Dateien kommen nach `server\certs\`.
+3. Eine PowerShell als Administrator öffnen:
    ```powershell
-   cd C:\kmdev-stream\server
-   .\install-server.ps1     # erster Lauf: legt config.json + Caddyfile an -> Domain/Pfade anpassen
-   .\install-server.ps1     # zweiter Lauf: Dienste + Firewall
+   cd <pfad>\server
+   .\install-server.ps1     # erster Lauf: legt config.json + Caddyfile an -> im Caddyfile die Domain eintragen
+   .\install-server.ps1     # zweiter Lauf: Downloads, Dienste, Firewall, Selbsttest
    ```
 4. Test: `https://<subdomain>/health` → `{"ok":true,...}`
 
+Das Skript lädt **WinSW** (Dienst-Wrapper, v2.12.0, SHA256-geprüft) und das
+aktuelle **Caddy** von GitHub (gegen die offizielle checksums.txt geprüft)
+nach `server\bin\`. Es prüft das Caddyfile, bevor es die Dienste einrichtet.
+
 Dienste: `KMDevStream` (Node, nur 127.0.0.1:8443) und `KMDevStreamCaddy`
-(HTTPS 443 mit dem Cloudflare-Origin-Zertifikat). Logs liegen unter `server\logs\`.
+(HTTPS 443 mit dem Cloudflare-Origin-Zertifikat). Beide starten automatisch
+und werden bei einem Absturz neu gestartet. Logs mit Rotation liegen unter
+`server\logs\` (`*.out.log`, `*.err.log`, `*.wrapper.log`).
+
+Das Skript kann jederzeit erneut laufen, zum Beispiel nach einem `git pull`.
+Es richtet die Dienste dann neu ein. Mit `-UpdateCaddy` holt es zusätzlich
+die neueste Caddy-Version.
 
 ### TURN (optional, für Zuschauer hinter strengem NAT)
 

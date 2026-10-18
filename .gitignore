@@ -8,3 +8,5 @@ server/certs/
 server/logs/
 
 *.log
+server/bin/
+server/service/

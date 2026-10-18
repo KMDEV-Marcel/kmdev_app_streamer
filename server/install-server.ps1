@@ -9,9 +9,9 @@
   - oeffnet die Firewall fuer HTTPS (Caddy) und optional TURN
 
   Voraussetzungen (vorher installieren, in PATH oder per Parameter):
-    node.exe  – https://nodejs.org (LTS)
-    nssm.exe  – https://nssm.cc
-    caddy.exe – https://caddyserver.com/download
+    node.exe  - https://nodejs.org (LTS)
+    nssm.exe  - https://nssm.cc
+    caddy.exe - https://caddyserver.com/download
 
   Als Administrator ausfuehren.
 #>
@@ -27,6 +27,13 @@ $here = $PSScriptRoot
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { throw 'Bitte als Administrator ausfuehren.' }
 
+# Dienste laufen als LocalSystem und sehen keine Netzlaufwerke, die nur fuer
+# den angemeldeten Benutzer verbunden sind.
+$drive = [System.IO.DriveInfo]::new((Split-Path -Qualifier $here))
+if ($drive.DriveType -eq 'Network') {
+  throw "$here liegt auf einem Netzlaufwerk. Bitte den server-Ordner auf eine lokale Platte kopieren (z. B. C:\kmdev-stream\server)."
+}
+
 $node = (Get-Command node -ErrorAction Stop).Source
 $nssmExe = (Get-Command $Nssm -ErrorAction Stop).Source
 $caddyExe = (Get-Command $Caddy -ErrorAction Stop).Source
@@ -37,11 +44,11 @@ try { & npm install --omit=dev; if ($LASTEXITCODE) { throw 'npm install fehlgesc
 
 if (-not (Test-Path (Join-Path $here 'config.json'))) {
   Copy-Item (Join-Path $here 'config.example.json') (Join-Path $here 'config.json')
-  Write-Host '   config.json angelegt – bitte pruefen.'
+  Write-Host '   config.json angelegt - bitte pruefen.'
 }
 if (-not (Test-Path (Join-Path $here 'Caddyfile'))) {
   Copy-Item (Join-Path $here 'Caddyfile.example') (Join-Path $here 'Caddyfile')
-  Write-Host '   Caddyfile angelegt – DOMAIN UND PFAD ANPASSEN, dann Skript erneut ausfuehren.'
+  Write-Host '   Caddyfile angelegt - DOMAIN UND PFAD ANPASSEN, dann Skript erneut ausfuehren.'
   exit 0
 }
 New-Item -ItemType Directory -Force (Join-Path $here 'certs') | Out-Null
@@ -66,7 +73,7 @@ function Install-Svc($name, $exe, $arguments, $display) {
 
 foreach ($f in 'origin.pem', 'origin.key') {
   if (-not (Test-Path (Join-Path $here "certs\$f"))) {
-    throw "certs\$f fehlt – Cloudflare-Origin-Zertifikat ablegen (siehe Caddyfile.example)."
+    throw "certs\$f fehlt - Cloudflare-Origin-Zertifikat ablegen (siehe Caddyfile.example)."
   }
 }
 

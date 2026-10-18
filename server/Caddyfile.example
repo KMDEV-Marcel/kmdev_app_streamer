@@ -14,7 +14,8 @@
 }
 
 stream.example.com:443 {
-	tls C:/kmdev-stream/server/certs/origin.pem C:/kmdev-stream/server/certs/origin.key
+	# Relativ zum Server-Ordner (der Dienst startet mit diesem Arbeitsverzeichnis).
+	tls certs/origin.pem certs/origin.key
 
 	# Signaling (WebSocket) + Health-Check an Node weiterreichen.
 	handle /ws {

@@ -1,16 +1,17 @@
-# KMDev Stream
+# KM-DEV Stream
 
 Bildschirm-/Fensterübertragung per WebRTC (P2P) als installierbare Windows-App
 mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 angelehnt.
 
-**Download:** [Releases](https://github.com/KMDEV-Marcel/kmdev_app_streamer/releases/latest) → `KMDev-Stream-Setup-<version>.exe`
+**Download:** [Releases](https://github.com/KMDEV-Marcel/kmdev_app_streamer/releases/latest) → `KM-DEV-Stream-Setup-<version>.exe`
 
 ## Ausbaustufen
 
 | Stufe | Inhalt | Stand |
 |---|---|---|
 | 1 | Grundgerüst: Aufnahme Bildschirm/Fenster, P2P über Signaling-Server, alle Video-Einstellungen, Auto-Update | ✅ |
-| 2 | Server-Modus (LiveKit-SFU), Browser-Link für Zuschauer, TURN | offen |
+| 1b | Eigener TURN-Server auf dem Windows-Server | ✅ |
+| 2 | Server-Modus (SFU), Browser-Link für Zuschauer | offen |
 | 3 | Anwendungsaudio pro App (WASAPI Process Loopback): Ausgewählte / Alle außer / Alle, Regler pro App | offen |
 | 4 | Code-Signing, Feinschliff Installer | offen |
 
@@ -38,6 +39,7 @@ mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 ang
 | `updater.js` | Auto-Update (electron-updater, GitHub provider) |
 | `renderer/` | Oberfläche (`app.js`), WebRTC (`rtc.js`), Presets (`presets.js`) |
 | `server/` | Signaling-Server (Node), Caddy-Vorlage, Setup-Skript für Windows Server |
+| `turn/` | TURN-Server (Go/pion) für Verbindungen hinter NAT, wird im Release-Workflow gebaut |
 | `.github/workflows/release.yml` | Baut bei einem Tag `v*` den Installer und veröffentlicht das Release |
 
 ## Entwicklung
@@ -136,9 +138,27 @@ Das Skript kann jederzeit erneut laufen, zum Beispiel nach einem `git pull`.
 Es richtet die Dienste dann neu ein. Mit `-UpdateCaddy` holt es zusätzlich
 die neueste Caddy-Version.
 
-### TURN (optional, für Zuschauer hinter strengem NAT)
+### TURN-Server (Relay für Teilnehmer hinter NAT/Firewall)
 
-Der Server gibt zeitlich begrenzte TURN-Zugangsdaten aus (`config.json → turn`,
-Schema „TURN REST API“ / `use-auth-secret`). Bis Stufe 2 klappen Verbindungen
-in den meisten Netzen direkt. Schlägt eine fehl, zeigt die Zuschauer-App
-„Verbindung fehlgeschlagen (evtl. Firewall/NAT – TURN nötig)“.
+Klappt zwischen zwei Teilnehmern keine direkte Verbindung (strenges NAT,
+Firmen-Firewall, Mobilfunk), läuft der Verkehr über den eigenen TURN-Server
+auf dem Dedicated Server. Bild und Ton bleiben dabei Ende-zu-Ende verschlüsselt.
+
+- **Programm:** `turn/` (Go, auf Basis von [pion/turn](https://github.com/pion/turn)).
+  GitHub Actions baut daraus `kmdev-turn.exe` und hängt sie an jedes Release.
+  `install-server.ps1` lädt sie von dort und prüft die SHA256.
+- **Einrichtung:** automatisch über `install-server.ps1`. Das Skript erzeugt
+  ein zufälliges `turn.secret`, ermittelt die öffentliche IP, wählt Portbereiche
+  außerhalb der von Windows reservierten Bereiche und legt den Dienst
+  `KMDevStreamTurn` und die Firewall-Regeln an. Mit `-NoTurn` lässt du TURN weg.
+- **Zugangsdaten:** Der Signaling-Server gibt pro Verbindung zeitlich begrenzte
+  Zugangsdaten aus (Schema „TURN REST API“, gemeinsames `turn.secret`).
+- **Sicherheit:** Der TURN-Server leitet nur an öffentliche Adressen weiter,
+  nicht ins interne Netz und nicht an localhost.
+- **Netzwerk:** TURN läuft direkt auf der öffentlichen IP und **nicht** über
+  Cloudflare, weil es UDP braucht. Freizugeben sind TCP+UDP 3478 und der
+  UDP-Relay-Bereich (Standard 49160–49260). Hat dein Hoster eine eigene
+  Firewall, müssen die Ports auch dort offen sein.
+- **Bandbreite:** Weitergeleiteter Verkehr läuft doppelt über den Server
+  (rein und raus). Bei 6 Zuschauern mit 8 Mbit/s über TURN sind das rund
+  100 Mbit/s, für eine Gigabit-Leitung kein Problem.

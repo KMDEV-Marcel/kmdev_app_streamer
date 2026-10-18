@@ -12,6 +12,20 @@ let selectedSourceId = null;
 
 /* ---------- Einstellungen ---------- */
 
+// Bis 0.1.0 hiess die App "KMDev Stream" – Electron legte die Einstellungen
+// unter diesem Namen ab. Beim ersten Start nach der Umbenennung uebernehmen.
+function migrateLegacySettings() {
+  const legacy = path.join(app.getPath('appData'), 'KMDev Stream', 'settings.json');
+  if (fs.existsSync(SETTINGS_PATH) || !fs.existsSync(legacy)) return;
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+    fs.copyFileSync(legacy, SETTINGS_PATH);
+  } catch (e) {
+    console.warn('Alte Einstellungen nicht uebernommen', e);
+  }
+}
+migrateLegacySettings();
+
 // Keine Server-Adresse vorgegeben: Jeder Nutzer traegt seinen Server beim
 // ersten Start selbst ein (Repo ist oeffentlich, keine Domains im Code).
 const DEFAULT_SETTINGS = {
@@ -55,7 +69,7 @@ function createWindow() {
     backgroundColor: '#14161a',
     autoHideMenuBar: true,
     icon: ICON,
-    title: `KMDev Stream ${app.getVersion()}`,
+    title: `KM-DEV Stream ${app.getVersion()}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -144,7 +158,7 @@ ipcMain.handle('settings:save', (_e, s) => saveSettings(s));
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 ipcMain.handle('app:streaming', (_e, on) => {
   streaming = !!on;
-  if (win) win.setTitle(`KMDev Stream ${app.getVersion()}${streaming ? ' – LIVE' : ''}`);
+  if (win) win.setTitle(`KM-DEV Stream ${app.getVersion()}${streaming ? ' – LIVE' : ''}`);
   return streaming;
 });
 ipcMain.handle('shell:open', (_e, url) => {

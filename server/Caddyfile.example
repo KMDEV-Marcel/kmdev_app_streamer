@@ -27,6 +27,6 @@ stream.example.com:{$KMDEV_HTTPS_PORT:443} {
 	}
 
 	handle {
-		respond "KMDev Stream" 200
+		respond "KM-DEV Stream" 200
 	}
 }

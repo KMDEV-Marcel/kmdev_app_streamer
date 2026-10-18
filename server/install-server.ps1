@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Einmaliges Setup des KMDev-Stream-Servers auf Windows Server.
+  Einmaliges Setup des KM-DEV-Stream-Servers auf Windows Server.
 
 .DESCRIPTION
   - installiert die Node-Abhaengigkeiten
@@ -9,7 +9,9 @@
     deren Pruefsummen
   - registriert Node-Server und Caddy als Windows-Dienste (ueber WinSW,
     mit Neustart bei Absturz und Log-Rotation)
-  - oeffnet die Firewall fuer HTTPS und optional TURN
+  - richtet den TURN-Server ein (Relay fuer Teilnehmer hinter NAT/Firewall):
+    Secret und oeffentliche IP automatisch, EXE aus dem GitHub-Release
+  - oeffnet die Firewall fuer HTTPS und TURN
 
   Einzige Voraussetzung: Node.js LTS (https://nodejs.org, .msi-Installer).
 
@@ -27,6 +29,9 @@
   HTTPS-Port fuer Caddy vorgeben. Ohne Angabe: 443, oder - wenn 443 belegt ist
   (z. B. IIS/Plesk) - der erste freie Cloudflare-Port aus 2053/2083/2087/2096.
 
+.PARAMETER NoTurn
+  TURN-Server nicht einrichten bzw. deaktivieren.
+
 .PARAMETER UpdateCaddy
   bin\caddy.exe neu herunterladen, auch wenn sie schon existiert.
 #>
@@ -35,7 +40,7 @@ param(
   [string]$Caddy,
   [switch]$UpdateCaddy,
   [int]$HttpsPort,
-  [switch]$OpenTurnPorts
+  [switch]$NoTurn
 )
 
 $ErrorActionPreference = 'Stop'
@@ -199,6 +204,78 @@ if ($HttpsPort) {
 $env:KMDEV_HTTPS_PORT = "$caddyPort"
 Write-Host "== HTTPS-Port fuer Caddy: $caddyPort"
 
+# ---------- TURN (Relay fuer Verbindungen hinter NAT/Firewall) ----------
+# Laeuft direkt auf der oeffentlichen IP, NICHT ueber Cloudflare (UDP).
+# Secret und oeffentliche IP werden beim ersten Lauf automatisch gesetzt.
+
+$turnEnabled = -not $NoTurn
+$cfgObj = $configText | ConvertFrom-Json
+if (-not $cfgObj.turn) { $cfgObj | Add-Member -NotePropertyName turn -NotePropertyValue ([pscustomobject]@{}) }
+$t = $cfgObj.turn
+function Set-Prop($obj, $name, $value) {
+  if ($obj.PSObject.Properties[$name]) { $obj.$name = $value } else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value }
+}
+$cfgChanged = $false
+
+if ($turnEnabled) {
+  if (-not $t.secret -or "$($t.secret)".Length -lt 16 -or "$($t.secret)" -match 'HIER-') {
+    $bytes = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    Set-Prop $t 'secret' (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+    Write-Host '   TURN-Secret erzeugt.'
+    $cfgChanged = $true
+  }
+  if (-not $t.publicIp) {
+    # Oeffentliche IP ueber Cloudflare ermitteln (gleiche Infrastruktur wie die Domain).
+    $trace = (Invoke-WebRequest 'https://cloudflare.com/cdn-cgi/trace' -UseBasicParsing -TimeoutSec 10).Content
+    if ($trace -is [byte[]]) { $trace = [Text.Encoding]::ASCII.GetString($trace) }
+    if ($trace -match '(?m)^ip=(\d+\.\d+\.\d+\.\d+)\s*$') {
+      Set-Prop $t 'publicIp' $Matches[1]
+      Write-Host "   Oeffentliche IP erkannt: $($Matches[1])"
+      $cfgChanged = $true
+    } else {
+      throw 'Oeffentliche IPv4 nicht ermittelbar. Bitte turn.publicIp in config.json eintragen.'
+    }
+  }
+  $turnPort = if ($t.listenPort) { [int]$t.listenPort } else { 3478 }
+
+  # Relay-Portbereich darf nicht in einem von Windows reservierten UDP-Bereich liegen.
+  $udpExcluded = @()
+  foreach ($line in (& netsh interface ipv4 show excludedportrange protocol=udp)) {
+    if ($line -match '^\s*(\d+)\s+(\d+)') { $udpExcluded += ,@([int]$Matches[1], [int]$Matches[2]) }
+  }
+  function Test-RangeFree($min, $max) {
+    foreach ($r in $udpExcluded) { if ($min -le $r[1] -and $max -ge $r[0]) { return $false } }
+    return $true
+  }
+  foreach ($r in $udpExcluded + $excluded) {
+    if ($turnPort -ge $r[0] -and $turnPort -le $r[1]) { throw "TURN-Port $turnPort ist von Windows reserviert. Bitte turn.listenPort in config.json aendern." }
+  }
+  $relayMin = if ($t.relayPortMin) { [int]$t.relayPortMin } else { 49160 }
+  $relayMax = if ($t.relayPortMax) { [int]$t.relayPortMax } else { 49260 }
+  if (-not (Test-RangeFree $relayMin $relayMax)) {
+    $old = "$relayMin-$relayMax"
+    $pick = @(@(40000, 40100), @(30000, 30100), @(20000, 20100), @(10000, 10100)) | Where-Object { Test-RangeFree $_[0] $_[1] } | Select-Object -First 1
+    if (-not $pick) { throw 'Kein freier UDP-Relay-Bereich gefunden. Bitte turn.relayPortMin/Max in config.json setzen.' }
+    $relayMin = $pick[0]; $relayMax = $pick[1]
+    Write-Host "   Relay-Bereich $old ist reserviert -> nutze $relayMin-$relayMax"
+  }
+  foreach ($kv in @{ enabled = $true; listenPort = $turnPort; relayPortMin = $relayMin; relayPortMax = $relayMax }.GetEnumerator()) {
+    if ($t.PSObject.Properties[$kv.Key] -and $t.($kv.Key) -eq $kv.Value) { continue }
+    Set-Prop $t $kv.Key $kv.Value
+    $cfgChanged = $true
+  }
+  Write-Host "== TURN: $($t.publicIp):$turnPort (UDP+TCP), Relay UDP $relayMin-$relayMax"
+} elseif ($t.enabled) {
+  Set-Prop $t 'enabled' $false
+  $cfgChanged = $true
+}
+
+if ($cfgChanged) {
+  $configText = $cfgObj | ConvertTo-Json -Depth 10
+  [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
+}
+
 # ---------- Downloads ----------
 
 function Get-Verified($url, $target, $algorithm, $expected) {
@@ -244,6 +321,23 @@ if (-not $Caddy) {
 }
 if (-not (Test-Path $Caddy)) { throw "caddy.exe nicht gefunden: $Caddy" }
 Write-Host "== Caddy: $(& $Caddy version)"
+
+# TURN-Server aus dem neuesten Release dieses Repos (dort von GitHub Actions gebaut).
+$turnExe = Join-Path $bin 'kmdev-turn.exe'
+if ($turnEnabled) {
+  $rel = Invoke-RestMethod 'https://api.github.com/repos/KMDEV-Marcel/kmdev_app_streamer/releases/latest' -UseBasicParsing
+  $exeAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-turn.exe' } | Select-Object -First 1
+  $sumAsset = $rel.assets | Where-Object { $_.name -eq 'kmdev-turn.exe.sha256' } | Select-Object -First 1
+  if (-not $exeAsset -or -not $sumAsset) { throw "Im Release $($rel.tag_name) fehlt kmdev-turn.exe - bitte ein neueres Release abwarten." }
+  $sum = (Invoke-WebRequest $sumAsset.browser_download_url -UseBasicParsing).Content
+  if ($sum -is [byte[]]) { $sum = [Text.Encoding]::ASCII.GetString($sum) }
+  $expected = ($sum.Trim() -split '\s+')[0].ToUpper()
+  if (-not (Test-Path $turnExe) -or (Get-FileHash $turnExe -Algorithm SHA256).Hash -ne $expected) {
+    Write-Host "== Lade TURN-Server ($($rel.tag_name))"
+    if (Get-Service 'KMDevStreamTurn' -ErrorAction SilentlyContinue) { Stop-Service 'KMDevStreamTurn' -Force }
+    Get-Verified $exeAsset.browser_download_url $turnExe 'SHA256' $expected
+  }
+}
 
 # Caddyfile vorab pruefen, damit der Dienst nicht in einer Neustart-Schleife landet.
 # Caddy loggt auf stderr; unter 'Stop' wuerde PowerShell 5.1 das bei 2>&1
@@ -313,25 +407,33 @@ $envXml
 }
 
 Write-Host '== Dienste'
-Install-Svc 'KMDevStream' 'KMDev Stream Signaling' 'WebSocket-Signaling fuer KMDev Stream' `
+Install-Svc 'KMDevStream' 'KM-DEV Stream Signaling' 'WebSocket-Signaling fuer KM-DEV Stream' `
   $Node "`"$(Join-Path $here 'server.js')`""
-Install-Svc 'KMDevStreamCaddy' 'KMDev Stream Caddy (HTTPS)' 'HTTPS-Reverse-Proxy fuer KMDev Stream' `
+Install-Svc 'KMDevStreamCaddy' 'KM-DEV Stream Caddy (HTTPS)' 'HTTPS-Reverse-Proxy fuer KM-DEV Stream' `
   $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile" @{ KMDEV_SIGNAL_PORT = "$port"; KMDEV_HTTPS_PORT = "$caddyPort" }
+if ($turnEnabled) {
+  Install-Svc 'KMDevStreamTurn' 'KM-DEV Stream TURN' 'TURN-Relay fuer KM-DEV Stream' `
+    $turnExe "-config `"$configPath`""
+} elseif (Get-Service 'KMDevStreamTurn' -ErrorAction SilentlyContinue) {
+  Stop-Service 'KMDevStreamTurn' -Force -ErrorAction SilentlyContinue
+  & (Join-Path $svcDir 'KMDevStreamTurn.exe') uninstall | Out-Null
+  Write-Host '   TURN-Dienst entfernt.'
+}
 
 # ---------- Firewall ----------
 
 Write-Host '== Firewall'
+# Regeln immer neu anlegen, damit geaenderte Ports (z. B. Relay-Bereich) greifen.
 function Allow($name, $proto, $ports) {
-  if (-not (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -DisplayName $name -Direction Inbound -Protocol $proto -LocalPort $ports -Action Allow | Out-Null
-  }
+  Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  New-NetFirewallRule -DisplayName $name -Direction Inbound -Protocol $proto -LocalPort $ports -Action Allow | Out-Null
   Write-Host "   $name ($proto $ports)"
 }
 Allow "KMDev Stream HTTPS $caddyPort" TCP $caddyPort
-if ($OpenTurnPorts) {
-  Allow 'KMDev Stream TURN TCP' TCP 3478
-  Allow 'KMDev Stream TURN UDP' UDP 3478
-  Allow 'KMDev Stream TURN Relay' UDP '49152-65535'
+if ($turnEnabled) {
+  Allow 'KMDev Stream TURN TCP' TCP $turnPort
+  Allow 'KMDev Stream TURN UDP' UDP $turnPort
+  Allow 'KMDev Stream TURN Relay' UDP "$relayMin-$relayMax"
 }
 
 # ---------- Selbsttest ----------
@@ -355,7 +457,29 @@ if ($domain -and $curl) {
   else { Write-Warning "Caddy antwortet lokal nicht auf HTTPS $caddyPort - siehe logs\KMDevStreamCaddy.err.log" }
 }
 
+# TURN: STUN-Binding-Request per UDP an den lokalen TURN-Server.
+if ($turnEnabled) {
+  $udp = [System.Net.Sockets.UdpClient]::new()
+  try {
+    $udp.Client.ReceiveTimeout = 3000
+    # Header: Typ 0x0001 (Binding Request), Laenge 0, Magic Cookie, 12 Byte Transaktions-ID
+    $req = [byte[]](0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xA4, 0x42) + [byte[]](1..12 | ForEach-Object { Get-Random -Maximum 256 })
+    [void]$udp.Send($req, $req.Length, '127.0.0.1', $turnPort)
+    $ep = [System.Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+    $resp = $udp.Receive([ref]$ep)
+    if ($resp.Length -ge 2 -and $resp[0] -eq 0x01 -and $resp[1] -eq 0x01) { Write-Host "== TURN-Server antwortet lokal auf UDP $turnPort" }
+    else { Write-Warning 'TURN-Server antwortet unerwartet - siehe logs\KMDevStreamTurn.err.log' }
+  } catch {
+    Write-Warning 'TURN-Server antwortet lokal nicht - siehe logs\KMDevStreamTurn.err.log'
+  } finally { $udp.Close() }
+}
+
 $shown = if ($domain) { $domain } else { '<deine-domain>' }
+if ($turnEnabled) {
+  Write-Host ''
+  Write-Host 'TURN: Falls dein Hoster eine eigene Firewall vor dem Server hat, dort freigeben:'
+  Write-Host "  TCP $turnPort, UDP $turnPort und UDP $relayMin-$relayMax  (direkt auf $($t.publicIp), nicht ueber Cloudflare)"
+}
 Write-Host ''
 if ($caddyPort -ne 443) {
   Write-Host "WICHTIG - Port 443 ist belegt, Caddy laeuft auf Port $caddyPort."

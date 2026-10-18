@@ -6,8 +6,13 @@
 
   "turn": {
     "enabled": false,
-    "urls": ["turn:turn.example.com:3478?transport=udp", "turn:turn.example.com:3478?transport=tcp"],
-    "secret": "HIER-EIN-LANGES-ZUFAELLIGES-GEHEIMNIS",
+    "secret": "",
+    "publicIp": "",
+    "host": "",
+    "listenPort": 3478,
+    "relayPortMin": 49160,
+    "relayPortMax": 49260,
+    "realm": "kmdev-stream",
     "ttlSeconds": 86400
   },
 

@@ -607,7 +607,7 @@ async function init() {
   updateState = await window.api.updateStatus();
   renderUpdateUi();
   const info = await window.api.appInfo();
-  document.title = `KMDev Stream ${info.version}`;
+  document.title = `KM-DEV Stream ${info.version}`;
   if (!settings.displayName || !settings.serverUrl) setTimeout(openAppSettings, 300);
 }
 

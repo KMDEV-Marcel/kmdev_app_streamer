@@ -10,3 +10,5 @@ server/logs/
 *.log
 server/bin/
 server/service/
+turn/*.exe
+turn/*.sha256

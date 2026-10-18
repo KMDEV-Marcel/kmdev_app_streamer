@@ -1,5 +1,5 @@
 /*
- * KMDev Stream – Signaling-Server
+ * KM-DEV Stream – Signaling-Server
  *
  * Aufgaben:
  *  1. WebSocket-Signaling (/ws): Raeume anlegen/betreten, SDP/ICE zwischen Host
@@ -24,7 +24,7 @@ const DEFAULTS = {
   host: '127.0.0.1',
   port: 8443,
   stunServers: ['stun:stun.l.google.com:19302'],
-  turn: { enabled: false, urls: [], secret: '', ttlSeconds: 86400 },
+  turn: { enabled: false, urls: [], host: '', publicIp: '', listenPort: 3478, secret: '', ttlSeconds: 86400 },
   maxRoomsPerIp: 5,
   maxViewersHardLimit: 50
 };
@@ -32,8 +32,8 @@ const DEFAULTS = {
 function loadConfig() {
   let file = {};
   if (fs.existsSync(CONFIG_PATH)) {
-    // BOM entfernen – Windows-Editoren/PowerShell schreiben gern eins davor.
-    file = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, ''));
+    // trimStart entfernt auch ein BOM (U+FEFF), das Windows-Editoren gern davorsetzen.
+    file = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').trimStart());
   } else {
     log(`Keine config.json gefunden (${CONFIG_PATH}) – nutze Standardwerte.`);
   }
@@ -51,14 +51,26 @@ const cfg = loadConfig();
 
 /* ---------- ICE / TURN ---------- */
 
+// TURN-Adressen: explizit aus turn.urls, sonst aus host bzw. publicIp gebaut.
+// Der TURN-Server darf NICHT hinter dem Cloudflare-Proxy liegen (UDP), daher
+// standardmaessig direkt die oeffentliche IP.
+function turnUrls() {
+  if (cfg.turn.urls && cfg.turn.urls.length) return cfg.turn.urls;
+  const host = cfg.turn.host || cfg.turn.publicIp;
+  if (!host) return [];
+  const port = cfg.turn.listenPort || 3478;
+  return [`turn:${host}:${port}?transport=udp`, `turn:${host}:${port}?transport=tcp`];
+}
+
 function iceServersFor(peerId) {
   const list = [];
   if (cfg.stunServers.length) list.push({ urls: cfg.stunServers });
-  if (cfg.turn.enabled && cfg.turn.secret && cfg.turn.urls.length) {
+  const urls = turnUrls();
+  if (cfg.turn.enabled && cfg.turn.secret && urls.length) {
     const expiry = Math.floor(Date.now() / 1000) + cfg.turn.ttlSeconds;
     const username = `${expiry}:${peerId}`;
     const credential = crypto.createHmac('sha1', cfg.turn.secret).update(username).digest('base64');
-    list.push({ urls: cfg.turn.urls, username, credential });
+    list.push({ urls, username, credential });
   }
   return list;
 }
@@ -342,5 +354,5 @@ server.on('error', (err) => {
 });
 
 server.listen(cfg.port, cfg.host, () => {
-  log(`KMDev Stream Server laeuft auf http://${cfg.host}:${cfg.port} (WS: /ws)`);
+  log(`KM-DEV Stream Server laeuft auf http://${cfg.host}:${cfg.port} (WS: /ws)`);
 });

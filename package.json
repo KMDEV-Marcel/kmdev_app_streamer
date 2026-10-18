@@ -1,6 +1,6 @@
 {
   "name": "kmdev-stream",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "P2P-Bildschirmübertragung mit Auto-Update",
   "main": "main.js",
   "author": "Marcel Kari",
@@ -20,7 +20,7 @@
   },
   "build": {
     "appId": "de.km-dev.stream",
-    "productName": "KMDev Stream",
+    "productName": "KM-DEV Stream",
     "directories": {
       "output": "dist"
     },
@@ -40,8 +40,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "KMDev Stream",
-      "artifactName": "KMDev-Stream-Setup-${version}.${ext}"
+      "shortcutName": "KM-DEV Stream",
+      "artifactName": "KM-DEV-Stream-Setup-${version}.${ext}"
     },
     "publish": [
       {

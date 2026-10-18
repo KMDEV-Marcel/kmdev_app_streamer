@@ -1,7 +1,7 @@
 {
   "name": "kmdev-stream-server",
   "version": "1.0.0",
-  "description": "Signaling-Server fuer KMDev Stream + Auslieferung der Auto-Updates",
+  "description": "Signaling-Server fuer KM-DEV Stream",
   "main": "server.js",
   "private": true,
   "author": "Marcel Kari",

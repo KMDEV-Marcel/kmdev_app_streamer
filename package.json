@@ -1,6 +1,6 @@
 {
   "name": "kmdev-stream",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "P2P-Bildschirmübertragung mit Auto-Update",
   "main": "main.js",
   "author": "Marcel Kari",
@@ -28,6 +28,7 @@
       "main.js",
       "preload.js",
       "updater.js",
+      "audio.js",
       "renderer/**",
       "build/icon.ico"
     ],
@@ -57,6 +58,12 @@
         "schemes": [
           "kmdev-stream"
         ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "native/bin/kmdev-audio.exe",
+        "to": "kmdev-audio.exe"
       }
     ]
   },

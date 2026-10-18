@@ -12,3 +12,4 @@ server/bin/
 server/service/
 media/*.exe
 media/*.sha256
+native/bin/

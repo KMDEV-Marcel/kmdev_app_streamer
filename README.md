@@ -1,7 +1,7 @@
 # KM-DEV Stream
 
-Bildschirm-/Fensterübertragung per WebRTC (P2P) als installierbare Windows-App
-mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 angelehnt.
+Bildschirm-/Fensterübertragung per WebRTC (P2P oder über den eigenen Server)
+als installierbare Windows-App mit Auto-Update über GitHub Releases.
 
 **Download:** [Releases](https://github.com/KMDEV-Marcel/kmdev_app_streamer/releases/latest) → `KM-DEV-Stream-Setup-<version>.exe`
 
@@ -12,7 +12,9 @@ mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 ang
 | 1 | Grundgerüst: Aufnahme Bildschirm/Fenster, P2P über Signaling-Server, alle Video-Einstellungen, Auto-Update | ✅ |
 | 1b | Eigener TURN-Server auf dem Windows-Server | ✅ |
 | 2 | Server-Modus (SFU), Browser-Link für Zuschauer, Zugangsschlüssel und Einladungen | ✅ |
-| 3 | Anwendungsaudio pro App (WASAPI Process Loopback): Ausgewählte / Alle außer / Alle, Regler pro App | offen |
+| 3 | Anwendungsaudio pro App (WASAPI Process Loopback): Ausgewählte / Alle außer / Alle, Regler und Pegel pro App | ✅ |
+| 3b | Mehrere Streams gleichzeitig: Raster, Fokus, frei skalierbar, eigene Fenster | ✅ |
+| 3c | Neues Design „Bühne“: Kopfleiste als Titelleiste, Code-Eingabe, Live-Ansicht mit Steuerleiste, Audio-Vorauswahl je Quelle, Beitritts-Ton | ✅ |
 | 4 | Code-Signing, Feinschliff Installer | offen |
 
 ## Architektur
@@ -34,13 +36,42 @@ mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 ang
 - **Server-Modus (SFU)**: Der Host lädt einmal hoch, der Server leitet die
   Pakete unverändert an alle Zuschauer weiter (kein Umkodieren, wenig CPU).
   Der Modus bleibt in der App gespeichert und gilt ab dem nächsten Streamstart.
+- **Oberfläche**: Oben die Umschaltung *Senden* / *Zuschauen*, die Kopfleiste
+  dient zugleich als Titelleiste. *Senden*: Quelle wählen (Tabs Bildschirme /
+  Fenster, Overlays wie NVIDIA GeForce Overlay werden ausgeblendet), rechts
+  Titel, Qualität (Flüssig, Scharf, Maximal, Präsentation) und Sichtbarkeit,
+  dann „Live gehen“. Live zeigt eine große Vorschau mit Laufzeit, Code,
+  Link, Zuschauerliste, Quellenwechsel und „Beenden“; Ton und Erweitertes
+  (Modus, Auflösung, FPS, Bitrate, Codec, Zuschauerlimit, Standard 10) bleiben
+  während des Streams änderbar. Tritt jemand bei, spielt ein kurzer Ton
+  (abschaltbar unter Einstellungen → Ton).
+- **Anwendungsaudio**: Ton einzelner Programme statt des ganzen Systems.
+  „Alle Programme“, „Alle außer den stummen“ oder „Nur ausgewählte
+  Programme“, mit Gesamtlautstärke sowie Regler, Pegel und hörbar/stumm pro
+  Programm. Beim Wählen einer Quelle gilt eine Vorauswahl: Fenster → nur der
+  Ton dieses Programms, Bildschirm → alle Programme; Discord und TeamSpeak
+  sind in beiden Fällen stumm. Die
+  KM-DEV-Stream-App selbst wird nie aufgenommen, so gibt es kein Echo, wenn
+  man streamt und gleichzeitig zuschaut. „Alle Apps“ ohne eigene Lautstärken
+  ist eine einzige Aufnahme (alles außer der App), sonst nimmt das
+  Hilfsprogramm jedes Programm einzeln auf. Braucht Windows 11 oder Windows 10
+  ab Build 20348, sonst wird automatisch der gesamte Systemton übertragen.
+- **Zuschauen**: 6-stelligen Code eintippen oder einen Einladungslink mit
+  Strg + V einfügen; darunter die Streams, die gerade öffentlich live sind.
+  Private Streams fragen nach dem Passwort.
+- **Mehrere Streams**: Über „+ Stream“ lassen sich beliebig viele Streams
+  gleichzeitig öffnen, jeder mit eigener Lautstärke. Anordnung: Raster
+  (automatisch), Fokus (einer groß, Rest in einer Leiste, Doppelklick wechselt)
+  oder Frei (verschieben durch Ziehen, an der Ecke skalieren). Das
+  Pop-out-Symbol löst einen Stream in ein eigenes Fenster, z. B. für den
+  zweiten Monitor.
 - **Zuschauen im Browser**: „Link kopieren“ liefert `https://<domain>/watch#CODE`.
   Die Seite spielt den Stream im Browser ab oder öffnet ihn in der App.
 - **Server-Adresse und Zugangsschlüssel**: Im Code ist keine Domain hinterlegt.
   Wer streamen oder die Stream-Liste sehen will, braucht den Zugangsschlüssel
   (`accessKey` in `config.json`). Am einfachsten über eine **Einladung**
   (`kmdev-stream://setup/…`): Das Install-Skript gibt sie am Ende aus, in der
-  App gibt es unter ⚙ „Einladung kopieren“. Zum Zuschauen reicht der
+  App gibt es unter Einstellungen → Verbindung „Einladung kopieren“. Zum Zuschauen reicht der
   Stream-Code bzw. der Link, ohne Schlüssel. Falsche Codes/Passwörter werden
   nach 20 Fehlversuchen pro Adresse für 10 Minuten gesperrt.
 
@@ -53,9 +84,11 @@ mit Auto-Update über GitHub Releases. Die Einstellungen sind an TeamSpeak 6 ang
 
 | Pfad | Zweck |
 |---|---|
-| `main.js`, `preload.js` | Electron-Hauptprozess: Fenster, Quellen-Auswahl, Einstellungen |
+| `main.js`, `preload.js` | Electron-Hauptprozess: Fenster, Pop-out-Fenster, Quellen-Auswahl, Einstellungen |
+| `audio.js` | Startet das Audio-Hilfsprogramm und reicht den Ton per MessagePort an die Oberfläche |
+| `native/` | Audio-Hilfsprogramm `kmdev-audio.exe` (C++, WASAPI Process Loopback), `build.ps1` baut es mit MSVC |
 | `updater.js` | Auto-Update (electron-updater, GitHub provider) |
-| `renderer/` | Oberfläche (`app.js`), WebRTC (`rtc.js`), Einladungen/Links (`invite.js`), Presets (`presets.js`) |
+| `renderer/` | Oberfläche (`app.js`, `index.html`, `styles.css`, Icons in `icons.js`), WebRTC (`rtc.js`), Kacheln/Multi-Stream (`tiles.js`), Anwendungsaudio (`appaudio.js`, `audio-worklet.js`), Pop-out (`popout.*`), Einladungen (`invite.js`), Presets |
 | `server/` | Signaling-Server (Node), Browser-Seite (`web/`), Caddy-Vorlage, Setup-Skript für Windows Server |
 | `media/` | Medien-Server (Go/pion): TURN und Server-Modus (SFU), wird im Release-Workflow gebaut |
 | `.github/workflows/release.yml` | Baut bei einem Tag `v*` den Installer und veröffentlicht das Release |
@@ -70,10 +103,11 @@ npm start                      # http://127.0.0.1:8443, WS unter /ws
 
 # App
 npm install
+.\native\build.ps1             # Audio-Hilfsprogramm, braucht Visual Studio mit C++
 npm start
 ```
 
-In der App unter ⚙ → „Server manuell eintragen“ als Server
+In der App unter Einstellungen → Verbindung als Server-Adresse
 `ws://127.0.0.1:8443/ws` eintragen. Ohne `accessKey` in `config.json` ist der
 lokale Server offen. Für den Server-Modus zusätzlich `turn.publicIp` (z. B. die
 LAN-IP) und `sfu.enabled`/`sfu.secret` setzen und den Medien-Server starten:
@@ -145,7 +179,7 @@ eigenen DNS-Eintrag braucht es dafür nicht.
    ```
 4. Test: `https://<subdomain>/health` → `{"ok":true,...,"sfu":true}`
 5. Die am Ende ausgegebene **Einladung** (`kmdev-stream://setup/…`) in der App
-   unter ⚙ → „Einladung einfügen“ eintragen und an alle weitergeben, die
+   unter Einstellungen → Verbindung → „Einladung einfügen“ eintragen und an alle weitergeben, die
    streamen sollen.
 
 Das Skript lädt **WinSW** (Dienst-Wrapper, v2.12.0, SHA256-geprüft) und das

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; connect-src ws: wss:; media-src blob: mediastream:;">
+<title>Stream</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="popout">
+  <div class="tile popout-tile">
+    <video id="video" autoplay playsinline></video>
+    <div id="overlay" class="tile-overlay">Verbinde…</div>
+    <div class="tile-head">
+      <span class="tile-live">LIVE</span>
+      <span id="title" class="tile-title"></span>
+      <span id="stats" class="tile-stats"></span>
+    </div>
+    <div class="tile-bar">
+      <button id="btnMute" class="tile-mute" title="Stumm"><i data-icon="volume_up"></i></button>
+      <input id="volume" class="tile-vol" type="range" min="0" max="1" step="0.01" value="1" title="Lautstärke">
+      <span class="spacer"></span>
+      <button id="btnPin" title="Immer im Vordergrund"><i data-icon="push_pin"></i></button>
+      <button id="btnFull" title="Vollbild"><i data-icon="fullscreen"></i></button>
+    </div>
+  </div>
+<script type="module" src="popout.js"></script>
+</body>
+</html>

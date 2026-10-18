@@ -7,222 +7,373 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div class="app">
 
-<header>
-  <h1><span class="logo">●</span> KM-DEV Stream</h1>
-  <nav class="tabs" id="mainTabs">
-    <button data-tab="send" class="active">Senden</button>
-    <button data-tab="watch">Zuschauen</button>
-  </nav>
-  <div class="spacer"></div>
-  <button id="updateBadge" class="update-badge" hidden></button>
-  <button id="btnSettings" class="ghost" title="Einstellungen">⚙</button>
-</header>
+  <!-- ================= Kopfleiste ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <img src="logo.png" alt="" class="brand-logo">
+      <span class="brand-mark">KM-DEV</span>
+      <span class="brand-sub">Stream</span>
+    </div>
 
-<div id="updateBanner" class="banner" hidden>
-  <span id="updateBannerText"></span>
-  <button id="btnInstallUpdate" class="primary">Jetzt neu starten</button>
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-page="send">
+        <i data-icon="cast"></i>Senden
+        <span id="navLive" class="nav-live" hidden><span class="dot"></span>LIVE</span>
+      </button>
+      <button class="nav-item" data-page="watch">
+        <i data-icon="live_tv"></i>Zuschauen
+        <span id="navTiles" class="nav-count" hidden></span>
+      </button>
+    </nav>
+
+    <div class="top-right">
+      <button id="updateBadge" class="update-badge" hidden></button>
+      <span class="conn" id="userStatus"><span class="dot"></span><span>kein Server</span></span>
+      <button id="btnSettings" class="icon-btn" title="Einstellungen"><i data-icon="settings"></i></button>
+      <button class="avatar" id="avatar" title="Gast">?</button>
+    </div>
+  </header>
+
+  <div id="updateBanner" class="banner" hidden>
+    <span id="updateBannerText"></span>
+    <button id="btnInstallUpdate" class="btn primary">Jetzt neu starten</button>
+  </div>
+
+  <main class="content">
+
+    <!-- ---------- Senden ---------- -->
+    <section id="page-send" class="page active">
+      <div class="send-main">
+
+        <!-- Vor dem Start: Quelle waehlen -->
+        <div id="sendSetup" class="send-setup">
+          <div class="steps">
+            <span class="step on">01 Quelle</span><span class="step-line"></span><span class="step">02 Live</span>
+          </div>
+          <div class="send-head">
+            <h1>Was möchtest du streamen?</h1>
+            <nav class="tabs" id="setupSourceTabs">
+              <button data-type="screen" class="active">Bildschirme</button>
+              <button data-type="window">Fenster</button>
+            </nav>
+            <button id="btnRefreshSources" class="icon-btn" title="Quellen neu laden"><i data-icon="refresh"></i></button>
+          </div>
+          <div id="sourceGrid" class="source-grid"></div>
+        </div>
+
+        <!-- Live: grosse Vorschau mit Steuerleiste -->
+        <div id="sendLive" class="send-live" hidden>
+          <div class="live-stage" id="liveStage">
+            <div class="live-pills">
+              <span class="pill-live"><span class="dot"></span>LIVE <span id="liveTimer">00:00:00</span></span>
+              <span class="pill-info" id="liveInfo"></span>
+            </div>
+            <div class="live-bar">
+              <div class="code-box">
+                <span class="room-code" id="roomCode">------</span>
+                <button id="btnCopyCode" class="sq green" title="Code kopieren"><i data-icon="content_copy"></i></button>
+                <button id="btnCopyLink" class="sq" title="Link zum Zuschauen im Browser oder in der App kopieren"><i data-icon="link"></i></button>
+              </div>
+              <button id="btnViewers" class="bar-btn viewers-btn" title="Zuschauer anzeigen">
+                <span class="faces" id="viewerFaces"></span>
+                <span id="viewerCount">0 schauen zu</span>
+                <i data-icon="expand_less" class="chev"></i>
+              </button>
+              <button id="btnChangeSource" class="bar-btn"><i data-icon="swap_horiz"></i>Quelle</button>
+              <button id="btnStop" class="bar-btn stop"><span class="sq-dot"></span>Beenden</button>
+            </div>
+            <div id="viewerPop" class="viewer-pop" hidden>
+              <div class="pop-head">Zuschauer <span id="sendStatus" class="muted"></span></div>
+              <table id="viewerTable">
+                <thead><tr><th>Name</th><th>Status</th><th>Auflösung</th><th>FPS</th><th>Bitrate</th><th>Ping</th><th>Weg</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+              <p id="noViewers" class="muted">Noch keine Zuschauer.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Rechte Spalte: Stream-Einstellungen -->
+      <aside class="panel" id="settingsPanel">
+        <div class="panel-tabs" id="panelTabs">
+          <button data-tab="general" class="active">Allgemein</button>
+          <button data-tab="audio">Ton</button>
+          <button data-tab="advanced">Erweitert</button>
+        </div>
+
+        <div class="panel-body">
+          <div class="pane active" data-pane="general">
+            <label class="field"><span>Titel</span><input type="text" id="inpTitle" maxlength="80" placeholder="z. B. Code-Review"></label>
+            <div class="field">
+              <span title="Setzt Auflösung, FPS und Bitrate auf passende Werte. „Präsentation“ = scharfer Text, wenige Bilder pro Sekunde.">Qualität</span>
+              <div class="radio-list" id="segPreset"></div>
+            </div>
+            <div class="field">
+              <span title="Alle: in der Stream-Liste deines Servers sichtbar. Mit Code: nur mit Code oder Link (und optional Passwort). Kontakte: folgt mit Benutzerkonten.">Wer darf zusehen?</span>
+              <div class="seg" id="segPrivacy">
+                <button data-v="public">Alle</button>
+                <button data-v="contacts" disabled title="Folgt mit Benutzerkonten">Kontakte</button>
+                <button data-v="private">Mit Code</button>
+              </div>
+            </div>
+            <label class="field"><span>Passwort</span><input type="password" id="inpPassword" placeholder="kein Passwort" autocomplete="new-password"></label>
+          </div>
+
+          <div class="pane" data-pane="audio">
+            <div class="toggle-row">
+              <div>
+                <div class="t">Ton aus Programmen</div>
+                <div class="d">Deine Zuschauer hören, was du hörst. Die Stream-App selbst wird nie aufgenommen.</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="chkAppAudio"><span></span></label>
+            </div>
+            <div id="appAudioBox" class="audio-box">
+              <div class="radio-list" id="segAudioMode">
+                <button data-v="all"><span class="radio"></span><span class="rt">Alle Programme</span></button>
+                <button data-v="exclude"><span class="radio"></span><span class="rt">Alle außer den stummen</span></button>
+                <button data-v="include"><span class="radio"></span><span class="rt">Nur ausgewählte Programme</span></button>
+              </div>
+              <div class="vol-row master">
+                <span>Gesamt</span>
+                <input type="range" id="audioMaster" min="0" max="1.5" step="0.01">
+                <span id="audioMasterVal" class="vol-val">100 %</span>
+              </div>
+              <div id="appList" class="app-list"></div>
+              <p id="audioNote" class="muted small"></p>
+            </div>
+          </div>
+
+          <div class="pane" data-pane="advanced">
+            <div class="field">
+              <span title="P2P: direkt zu jedem Zuschauer, dein Upload wächst mit jedem Zuschauer. Server: du lädst einmal hoch, der Server verteilt an alle. Gilt ab dem nächsten Streamstart.">Verbindungsmodus</span>
+              <div class="seg" id="segMode">
+                <button data-v="p2p">P2P</button>
+                <button data-v="server">Server</button>
+              </div>
+            </div>
+            <div class="field"><span title="Maximale Auflösung. „Quelle“ = native Auflösung ohne Skalierung.">Auflösung</span><div class="seg" id="segResolution"></div></div>
+            <div class="field"><span title="Bilder pro Sekunde">FPS</span><div class="seg" id="segFps"></div></div>
+            <div class="field">
+              <span title="Maximale Video-Bitrate pro Zuschauer">Bitrate</span>
+              <div class="stepper">
+                <button class="sq" id="bitrateMinus">−</button>
+                <input type="number" id="inpBitrate" step="500">
+                <span>Kbps</span>
+                <button class="sq" id="bitratePlus">+</button>
+              </div>
+            </div>
+            <div class="field"><span title="Opus, Stereo">Audio-Bitrate (Kbps)</span><div class="seg" id="segAudioBitrate"></div></div>
+            <div class="field">
+              <span title="H.264 nutzt meist die Hardware (wenig CPU). VP9/AV1 liefern bei gleicher Bitrate mehr Qualität, kosten aber mehr CPU.">Codec</span>
+              <div class="seg" id="segCodec">
+                <button data-v="h264">H.264</button>
+                <button data-v="vp9">VP9</button>
+                <button data-v="av1">AV1</button>
+              </div>
+            </div>
+            <div class="field">
+              <span title="0 = unbegrenzt (bis zum Server-Limit). Im P2P-Modus braucht jeder Zuschauer eigene Upload-Bandbreite.">Zuschauerbegrenzung</span>
+              <div class="stepper">
+                <button class="sq" id="limitMinus">−</button>
+                <input type="number" id="inpLimit" min="0" max="50">
+                <button class="sq" id="limitPlus">+</button>
+              </div>
+            </div>
+            <p class="upload-est" id="uploadEst"></p>
+          </div>
+        </div>
+
+        <div class="panel-foot" id="panelFoot">
+          <button id="btnStart" class="go-live" disabled><span class="dot"></span>Live gehen</button>
+          <span class="foot-note">Ton &amp; Erweitert kannst du auch während des Streams anpassen.</span>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ---------- Zuschauen ---------- -->
+    <section id="page-watch" class="page">
+
+      <!-- Startseite: Code eingeben + Liste -->
+      <div id="watchHome" class="watch-home">
+        <button id="btnBackToTiles" class="back-btn" hidden><i data-icon="arrow_back"></i>Zurück zu deinen Streams</button>
+        <div class="join-area">
+          <h1>Code eingeben und zuschauen</h1>
+          <div class="code-entry">
+            <div class="code-boxes" id="codeBoxes"></div>
+            <input type="text" id="inpJoinCode" maxlength="400" autocomplete="off" spellcheck="false" aria-label="Stream-Code">
+          </div>
+          <div id="joinCard" class="join-card" hidden>
+            <div class="jc-top">
+              <div class="jc-thumb"></div>
+              <div class="jc-text">
+                <span class="jc-title" id="joinTitle"></span>
+                <span class="jc-meta" id="joinMeta"></span>
+              </div>
+            </div>
+            <div class="jc-actions">
+              <label class="jc-pw" id="joinPwBox" hidden><i data-icon="lock"></i><input type="password" id="inpJoinPassword" placeholder="Passwort eingeben" autocomplete="off"></label>
+              <button id="btnJoin" class="jc-go">Ansehen<i data-icon="arrow_forward"></i></button>
+            </div>
+          </div>
+          <p id="joinError" class="join-hint">Oder einfach einen Einladungslink einfügen, mit Strg + V.</p>
+        </div>
+
+        <div class="live-list">
+          <div class="ll-head">
+            <h2>Jetzt live bei Freunden</h2>
+            <span class="muted">Mit „+ Stream“ öffnest du mehrere nebeneinander</span>
+            <button id="btnRefreshRooms" class="icon-btn" title="Aktualisieren"><i data-icon="refresh"></i></button>
+          </div>
+          <div id="roomList" class="room-grid"></div>
+        </div>
+      </div>
+
+      <!-- Offene Streams -->
+      <div id="watchStage" class="watch-stage" hidden>
+        <div class="tiles-wrap">
+          <div id="tiles" class="tiles layout-grid"></div>
+        </div>
+        <div class="float-bar" id="watchBar">
+          <div class="seg-float" id="segLayout">
+            <button data-v="grid" title="Raster: alle gleich groß"><i data-icon="grid_view"></i>Raster</button>
+            <button data-v="focus" title="Einer groß, die anderen in einer Leiste"><i data-icon="view_sidebar"></i>Fokus</button>
+            <button data-v="free" title="Frei verschieben und skalieren"><i data-icon="picture_in_picture"></i>Frei</button>
+          </div>
+          <span class="fb-sep"></span>
+          <button id="btnAddStream" class="fb-btn strong"><i data-icon="add"></i>Stream</button>
+          <button id="btnCloseAll" class="fb-btn">Alle schließen</button>
+        </div>
+      </div>
+    </section>
+  </main>
 </div>
 
-<main>
-  <!-- ================= Senden ================= -->
-  <section id="tab-send" class="tab active">
-    <div class="stage">
-      <div class="preview-wrap">
-        <video id="preview" autoplay muted playsinline></video>
-        <div id="previewEmpty" class="preview-empty">
-          <p>Keine Quelle gewählt</p>
-          <button id="btnPickSource" class="primary">Bildschirm oder Fenster wählen</button>
-        </div>
-        <div id="liveBadge" class="live-badge" hidden>LIVE</div>
-      </div>
-
-      <div class="stage-bar">
-        <button id="btnChangeSource" disabled>Quelle ändern</button>
-        <div class="spacer"></div>
-        <span id="sendStatus" class="muted"></span>
-        <button id="btnStart" class="primary" disabled>Stream starten</button>
-        <button id="btnStop" class="danger" hidden>Stream beenden</button>
-      </div>
-
-      <div id="roomBox" class="room-box" hidden>
-        <div>
-          <div class="label">Stream-Code</div>
-          <div class="room-code" id="roomCode">------</div>
-        </div>
-        <button id="btnCopyCode">Code kopieren</button>
-        <button id="btnCopyLink" title="Link zum Zuschauen im Browser oder in der App">Link kopieren</button>
-        <span id="modeBadge" class="pill"></span>
-        <div class="spacer"></div>
-        <div class="upload-est" id="uploadEst"></div>
-      </div>
-
-      <div class="viewers">
-        <h3>Zuschauer <span id="viewerCount" class="pill">0</span></h3>
-        <table id="viewerTable">
-          <thead><tr><th>Name</th><th>Status</th><th>Auflösung</th><th>FPS</th><th>Bitrate</th><th>Ping</th><th>Weg</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <p id="noViewers" class="muted">Noch keine Zuschauer.</p>
-      </div>
-    </div>
-
-    <aside class="panel" id="settingsPanel">
-      <div class="row">
-        <label><i class="help" title="Setzt Auflösung, FPS und Bitrate auf passende Werte. „Präsentation“ = scharfer Text, wenige Bilder pro Sekunde.">?</i>Voreinstellung</label>
-        <div class="seg" id="segPreset"></div>
-      </div>
-      <div class="row">
-        <label><i class="help" title="Überträgt den Systemton mit. Auswahl einzelner Apps folgt in einer späteren Version.">?</i>Anwendungsaudio</label>
-        <label class="switch"><input type="checkbox" id="chkAppAudio"><span></span></label>
-      </div>
-      <div class="row">
-        <label><i class="help" title="Öffentlich: in der Stream-Liste sichtbar. Privat: nur mit Code (und optional Passwort). Kontakte: folgt mit Benutzerkonten.">?</i>Privatsphäre</label>
-        <div class="seg" id="segPrivacy">
-          <button data-v="public">🌐 Öffentlich</button>
-          <button data-v="contacts" disabled title="Folgt mit Benutzerkonten">👥 Kontakte</button>
-          <button data-v="private">🔒 Privat</button>
-        </div>
-      </div>
-      <div class="row">
-        <label><i class="help" title="Optional. Zuschauer müssen es beim Beitreten eingeben.">?</i>Passwort</label>
-        <input type="password" id="inpPassword" placeholder="kein Passwort" autocomplete="new-password">
-      </div>
-      <div class="row">
-        <label><i class="help" title="Wird in der öffentlichen Liste angezeigt.">?</i>Titel</label>
-        <input type="text" id="inpTitle" maxlength="80" placeholder="z. B. Code-Review">
-      </div>
-
-      <button class="section-toggle" id="toggleAdvanced">Erweiterte Einstellungen <span>⌄</span></button>
-      <div id="advanced">
-        <div class="row">
-          <label><i class="help" title="Maximale Auflösung. „Quelle“ = native Auflösung ohne Skalierung.">?</i>Auflösung</label>
-          <div class="seg" id="segResolution"></div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="Bilder pro Sekunde">?</i>FPS</label>
-          <div class="seg" id="segFps"></div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="Maximale Video-Bitrate pro Zuschauer">?</i>Bitrate</label>
-          <div class="stepper">
-            <button class="minus" id="bitrateMinus">−</button>
-            <input type="number" id="inpBitrate" step="500">
-            <span>Kbps</span>
-            <button class="plus" id="bitratePlus">+</button>
-          </div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="Opus, Stereo">?</i>Audio-Bitrate [Kbps]</label>
-          <div class="seg" id="segAudioBitrate"></div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="H.264 nutzt meist die Hardware (wenig CPU). VP9/AV1 liefern bei gleicher Bitrate mehr Qualität, kosten aber mehr CPU.">?</i>Codec</label>
-          <div class="seg" id="segCodec">
-            <button data-v="h264">H.264</button>
-            <button data-v="vp9">VP9</button>
-            <button data-v="av1">AV1</button>
-          </div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="0 = unbegrenzt (bis zum Server-Limit). Im P2P-Modus braucht jeder Zuschauer eigene Upload-Bandbreite.">?</i>Zuschauerbegrenzung</label>
-          <div class="stepper">
-            <button class="minus" id="limitMinus">−</button>
-            <input type="number" id="inpLimit" min="0" max="50">
-            <button class="plus" id="limitPlus">+</button>
-          </div>
-        </div>
-        <div class="row">
-          <label><i class="help" title="P2P: direkt zu jedem Zuschauer, dein Upload wächst mit jedem Zuschauer. Server: du lädst einmal hoch, der Server verteilt an alle. Die Wahl bleibt gespeichert und gilt ab dem nächsten Streamstart.">?</i>Verbindungsmodus</label>
-          <div class="seg" id="segMode">
-            <button data-v="p2p">👥 P2P</button>
-            <button data-v="server">🗄 Server</button>
-          </div>
-        </div>
-      </div>
-    </aside>
-  </section>
-
-  <!-- ================= Zuschauen ================= -->
-  <section id="tab-watch" class="tab">
-    <div id="watchLobby" class="lobby">
-      <div class="join-box">
-        <h2>Stream beitreten</h2>
-        <input type="text" id="inpJoinCode" placeholder="Stream-Code oder Link" maxlength="400" autocomplete="off">
-        <input type="password" id="inpJoinPassword" placeholder="Passwort (falls nötig)" autocomplete="off">
-        <button id="btnJoin" class="primary">Beitreten</button>
-        <p id="joinError" class="error"></p>
-      </div>
-      <div class="public-list">
-        <div class="list-head">
-          <h2>Öffentliche Streams</h2>
-          <button id="btnRefreshRooms">Aktualisieren</button>
-        </div>
-        <div id="roomList"></div>
-      </div>
-    </div>
-
-    <div id="player" class="player" hidden>
-      <video id="remoteVideo" autoplay playsinline></video>
-      <div class="player-bar">
-        <span id="playerTitle"></span>
-        <div class="spacer"></div>
-        <span id="playerStats" class="muted mono"></span>
-        <input type="range" id="volume" min="0" max="1" step="0.01" value="1" title="Lautstärke">
-        <button id="btnFullscreen" title="Vollbild">⛶</button>
-        <button id="btnLeave" class="danger">Verlassen</button>
-      </div>
-      <div id="playerOverlay" class="player-overlay">Verbinde…</div>
-    </div>
-  </section>
-</main>
-
-<!-- Quellen-Auswahl -->
+<!-- Quelle wechseln (waehrend des Streams) -->
 <div id="sourceModal" class="modal" hidden>
   <div class="modal-box wide">
     <div class="modal-head">
-      <h2>Was möchtest du teilen?</h2>
+      <h2>Quelle wechseln</h2>
       <nav class="tabs" id="sourceTabs">
         <button data-type="screen" class="active">Bildschirme</button>
         <button data-type="window">Fenster</button>
       </nav>
-      <button class="ghost" data-close>✕</button>
+      <button class="icon-btn" data-close><i data-icon="close"></i></button>
     </div>
-    <div id="sourceGrid" class="source-grid"></div>
+    <div id="sourceModalGrid" class="source-grid modal-grid"></div>
   </div>
 </div>
 
 <!-- Allgemeine Einstellungen -->
 <div id="appSettingsModal" class="modal" hidden>
-  <div class="modal-box">
+  <div class="modal-box settings-box">
     <div class="modal-head">
       <h2>Einstellungen</h2>
-      <button class="ghost" data-close>✕</button>
+      <button class="esc-hint" data-close>Esc<i data-icon="close"></i></button>
     </div>
-    <div class="form">
-      <label>Anzeigename<input type="text" id="inpName" maxlength="40"></label>
-      <label>Einladung einfügen<input type="text" id="inpInvite" placeholder="kmdev-stream://setup/…" autocomplete="off"></label>
-      <p class="muted small">Eine Einladung richtet Server und Zugangsschlüssel automatisch ein.</p>
-      <details id="serverDetails">
-        <summary>Server manuell eintragen</summary>
-        <div class="form-inner">
-          <label>Server-Adresse<input type="text" id="inpServer" placeholder="z. B. stream.meinedomain.de" autocomplete="off"></label>
-          <label>Zugangsschlüssel<input type="password" id="inpAccessKey" placeholder="vom Server-Betreiber" autocomplete="off"></label>
+    <nav class="settings-tabs" id="settingsTabs">
+      <button data-tab="account" class="active">Konto</button>
+      <button data-tab="send">Senden</button>
+      <button data-tab="watch">Zuschauen</button>
+      <button data-tab="audio">Ton</button>
+      <button data-tab="connection">Verbindung</button>
+      <button data-tab="about">Über</button>
+    </nav>
+    <div class="settings-body">
+      <div class="spane active" data-pane="account">
+        <div class="srow">
+          <div class="sl"><span class="t">Anzeigename</span><span class="d">So sehen dich andere in Listen und als Zuschauer.</span></div>
+          <input type="text" id="inpName" maxlength="40" class="sinput">
         </div>
-      </details>
-      <div class="about">
-        <span id="serverState" class="muted"></span>
-        <div class="spacer"></div>
-        <button id="btnCopyInvite" title="Einladung für weitere Personen kopieren">Einladung kopieren</button>
       </div>
-      <div class="about">
-        <span>Version <b id="appVersion"></b></span>
-        <span id="updateStateText" class="muted"></span>
-        <button id="btnCheckUpdate">Nach Updates suchen</button>
+
+      <div class="spane" data-pane="send">
+        <div class="srow">
+          <div class="sl"><span class="t">Standard-Qualität</span><span class="d">Wird beim Live gehen vorausgewählt.</span></div>
+          <div class="seg" id="segPresetS"></div>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Wer darf zusehen?</span><span class="d">Sichtbarkeit neuer Streams.</span></div>
+          <div class="seg" id="segPrivacyS">
+            <button data-v="public">Alle</button>
+            <button data-v="contacts" disabled title="Folgt mit Benutzerkonten">Kontakte</button>
+            <button data-v="private">Mit Code</button>
+          </div>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Video-Encoder</span><span class="d">H.264 nutzt meist die Grafikkarte.</span></div>
+          <div class="seg" id="segCodecS">
+            <button data-v="h264">H.264</button>
+            <button data-v="vp9">VP9</button>
+            <button data-v="av1">AV1</button>
+          </div>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Verbindungsmodus</span><span class="d">Server: du lädst einmal hoch, der Server verteilt.</span></div>
+          <div class="seg" id="segModeS">
+            <button data-v="p2p">P2P</button>
+            <button data-v="server">Server</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="spane" data-pane="watch">
+        <div class="srow">
+          <div class="sl"><span class="t">Anordnung</span><span class="d">Wie mehrere offene Streams angezeigt werden.</span></div>
+          <div class="seg" id="segLayoutS">
+            <button data-v="grid">Raster</button>
+            <button data-v="focus">Fokus</button>
+            <button data-v="free">Frei</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="spane" data-pane="audio">
+        <div class="srow">
+          <div class="sl"><span class="t">Ton aus Programmen</span><span class="d">Programm-Ton beim Senden mitschicken.</span></div>
+          <label class="switch"><input type="checkbox" id="chkAppAudioS"><span></span></label>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Ton bei neuem Zuschauer</span><span class="d">Kurzer Hinweiston, wenn jemand deinem Stream beitritt.</span></div>
+          <label class="switch"><input type="checkbox" id="chkJoinSound"><span></span></label>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Audio-Bitrate</span><span class="d">Opus, Stereo, in Kbps.</span></div>
+          <div class="seg" id="segAudioBitrateS"></div>
+        </div>
+      </div>
+
+      <div class="spane" data-pane="connection">
+        <div class="srow">
+          <div class="sl"><span class="t">Einladung einfügen</span><span class="d">Richtet Server und Zugangsschlüssel automatisch ein.</span></div>
+          <input type="text" id="inpInvite" class="sinput" placeholder="kmdev-stream://setup/…" autocomplete="off">
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Server-Adresse</span><span class="d">Nur nötig ohne Einladung.</span></div>
+          <input type="text" id="inpServer" class="sinput" placeholder="z. B. stream.meinedomain.de" autocomplete="off">
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Zugangsschlüssel</span><span class="d">Vom Server-Betreiber.</span></div>
+          <input type="password" id="inpAccessKey" class="sinput" placeholder="Schlüssel" autocomplete="off">
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Status</span><span class="d" id="serverState"></span></div>
+          <button id="btnCopyInvite" class="btn" title="Einladung für weitere Personen kopieren">Einladung kopieren</button>
+        </div>
+      </div>
+
+      <div class="spane" data-pane="about">
+        <div class="srow">
+          <div class="sl"><span class="t">Version <b id="appVersion"></b></span><span class="d" id="updateStateText"></span></div>
+          <button id="btnCheckUpdate" class="btn">Nach Updates suchen</button>
+        </div>
       </div>
     </div>
     <div class="modal-foot">
-      <button id="btnSaveAppSettings" class="primary">Speichern</button>
+      <span class="muted small">Name und Verbindung werden mit „Speichern“ übernommen, alles andere sofort.</span>
+      <button id="btnSaveAppSettings" class="btn primary">Speichern</button>
     </div>
   </div>
 </div>

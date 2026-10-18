@@ -1,7 +1,9 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 const updater = require('./updater');
+const audio = require('./audio');
 
 const ICON = path.join(__dirname, 'build', 'icon.ico');
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
@@ -40,10 +42,21 @@ const DEFAULT_SETTINGS = {
   bitrate: 6000,
   audioBitrate: 128,
   appAudio: true,
+  // Anwendungsaudio: 'all' = alle Apps, 'include' = nur ausgewaehlte,
+  // 'exclude' = alle ausser ausgewaehlten. Die eigene App ist nie dabei.
+  // Sprach-Chats sind von Anfang an stumm (siehe VOICE_APPS im Renderer).
+  audioMode: 'exclude',
+  audioSelected: ['discord.exe', 'discordptb.exe', 'discordcanary.exe', 'ts3client_win64.exe', 'ts3client_win32.exe', 'teamspeak.exe'],
+  audioVolumes: {},
+  audioMaster: 1,
+  // Zuschauen: Anordnung der Kacheln ('grid' | 'focus' | 'free')
+  watchLayout: 'grid',
   privacy: 'private',
-  viewerLimit: 0,
+  viewerLimit: 10,
   connectionMode: 'p2p',
-  title: ''
+  title: '',
+  joinSound: true, // Ton, wenn beim eigenen Stream jemand beitritt
+  settingsVersion: 2
 };
 
 function loadSettings() {
@@ -51,6 +64,11 @@ function loadSettings() {
   try {
     saved = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
   } catch { /* erster Start */ }
+  // Bis Version 1 war "unbegrenzt" (0) voreingestellt – einmalig auf 10 setzen.
+  if (Object.keys(saved).length && !saved.settingsVersion) {
+    if (!saved.viewerLimit) saved.viewerLimit = 10;
+    saved.settingsVersion = 2;
+  }
   return { ...DEFAULT_SETTINGS, ...saved };
 }
 
@@ -69,16 +87,21 @@ function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 600,
-    backgroundColor: '#14161a',
+    backgroundColor: '#0d1110',
     autoHideMenuBar: true,
     icon: ICON,
     title: `KM-DEV Stream ${app.getVersion()}`,
+    // Eigene Kopfleiste als Titelleiste; Windows zeichnet nur die Fensterknoepfe darueber.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#0d1110', symbolColor: '#9aa6a1', height: 60 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       // Stream soll auch im minimierten Fenster mit voller Rate weiterlaufen.
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      // Anwendungsaudio laeuft ueber einen AudioContext, der ohne Klick starten muss.
+      autoplayPolicy: 'no-user-gesture-required'
     }
   });
   Menu.setApplicationMenu(null);
@@ -95,6 +118,11 @@ function createWindow() {
       message: 'Es läuft gerade ein Stream. Wirklich beenden?'
     });
     if (choice !== 0) e.preventDefault();
+  });
+  // Pop-out-Fenster gehoeren zum Hauptfenster.
+  win.on('closed', () => {
+    for (const w of popouts) if (!w.isDestroyed()) w.close();
+    audio.stop();
   });
 
   // Links aus der Oberflaeche im Standardbrowser oeffnen, nie im App-Fenster.
@@ -121,8 +149,8 @@ function installDisplayMediaHandler() {
         return;
       }
       const result = { video: source };
-      // 'loopback' = gesamter Systemton (Windows). Pro-App-Audio folgt in
-      // Ausbaustufe 3 ueber WASAPI Process Loopback.
+      // 'loopback' = gesamter Systemton. Nur noch Rueckfall, wenn das
+      // Anwendungsaudio (audio.js, WASAPI Process Loopback) nicht verfuegbar ist.
       if (request.audioRequested) result.audio = 'loopback';
       callback(result);
     } catch (err) {
@@ -132,15 +160,40 @@ function installDisplayMediaHandler() {
   });
 }
 
+// Unsichtbare Overlays und Hilfsfenster (Treiber, Tastatur-Tools, Eingabe-
+// methoden), die Windows als Fenster meldet, die man aber nicht streamen will.
+const HIDDEN_WINDOWS = [
+  /^nvidia geforce overlay/i, /^nvidia overlay/i, /^amd (software|radeon).*overlay/i,
+  /^rzmonitorforegroundwindow$/i,
+  /^program manager$/i, /^windows input experience$/i, /^microsoft text input application$/i,
+  /^default ime$/i, /^msctfime ui$/i, /^task switching$/i, /^start$/i, /^search$/i
+];
+
+// Komplett durchsichtiges Vorschaubild = Overlay ohne eigenen Inhalt.
+function isTransparent(img) {
+  if (img.isEmpty()) return false;
+  const bmp = img.toBitmap(); // BGRA
+  for (let i = 3; i < bmp.length; i += 4 * 97) if (bmp[i] !== 0) return false;
+  return true;
+}
+
+function isStreamableWindow(s) {
+  const name = String(s.name || '').trim();
+  if (!name) return false;
+  if (HIDDEN_WINDOWS.some((re) => re.test(name))) return false;
+  return !isTransparent(s.thumbnail);
+}
+
 ipcMain.handle('capture:sources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
-    thumbnailSize: { width: 320, height: 180 },
+    thumbnailSize: { width: 640, height: 360 },
     fetchWindowIcons: true
   });
   return sources
     // Das eigene Fenster nicht anbieten – ergibt nur einen Spiegel-Effekt.
     .filter((s) => !win || s.id !== win.getMediaSourceId())
+    .filter((s) => s.id.startsWith('screen:') || isStreamableWindow(s))
     .map((s) => ({
       id: s.id,
       name: s.name,
@@ -149,6 +202,26 @@ ipcMain.handle('capture:sources', async () => {
       thumbnail: s.thumbnail.isEmpty() ? null : s.thumbnail.toDataURL(),
       icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null
     }));
+});
+
+// Programm hinter einer Fenster-Quelle ("window:<HWND>:0") -> "chrome.exe".
+// Dient nur als Vorauswahl fuer das Anwendungsaudio.
+ipcMain.handle('capture:window-exe', (_e, id) => {
+  const m = /^window:(\d+):/.exec(String(id));
+  if (!m || process.platform !== 'win32') return null;
+  const script = [
+    '$t = Add-Type -PassThru -Name W -Namespace K -MemberDefinition \'[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);\'',
+    '$p = 0',
+    `[void]$t::GetWindowThreadProcessId([IntPtr]${m[1]}, [ref]$p)`,
+    'if ($p) { (Get-Process -Id $p).Path }'
+  ].join('; ');
+  return new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000 }, (err, out) => {
+      const exe = path.basename(String(out || '').trim()).toLowerCase();
+      // Store-Apps haengen alle am selben Rahmenprozess – der sagt nichts ueber den Ton.
+      resolve(err || !exe || exe === 'applicationframehost.exe' ? null : exe);
+    });
+  });
 });
 
 ipcMain.handle('capture:select', (_e, id) => {
@@ -166,6 +239,57 @@ ipcMain.handle('app:streaming', (_e, on) => {
 });
 ipcMain.handle('shell:open', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
+});
+
+/* ---------- Anwendungsaudio ---------- */
+
+function sendToWin(channel, data) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, data);
+}
+
+audio.init({
+  onStatus: (s) => sendToWin('audio:status', s),
+  onApps: (apps) => sendToWin('audio:apps', apps)
+});
+ipcMain.handle('audio:start', (e) => audio.start(e.sender));
+ipcMain.handle('audio:stop', () => audio.stop());
+ipcMain.handle('audio:config', (_e, cfg) => audio.configure(cfg));
+ipcMain.handle('audio:list', () => audio.requestList());
+
+/* ---------- Pop-out: einzelner Stream im eigenen Fenster ---------- */
+
+const popouts = new Set();
+
+ipcMain.handle('popout:open', (_e, data) => {
+  const w = new BrowserWindow({
+    width: 1100,
+    height: 640,
+    minWidth: 320,
+    minHeight: 200,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    icon: ICON,
+    title: String(data.title || 'Stream'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  });
+  popouts.add(w);
+  w.on('closed', () => popouts.delete(w));
+  // Daten nur lokal ueber die Adresszeile der Datei (verlassen den Rechner nicht).
+  const d = Buffer.from(JSON.stringify(data)).toString('base64url');
+  w.loadFile(path.join(__dirname, 'renderer', 'popout.html'), { query: { d } });
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  return true;
+});
+
+ipcMain.handle('popout:pin', (e, on) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (w && popouts.has(w)) w.setAlwaysOnTop(!!on);
+  return !!on;
 });
 
 /* ---------- Einladungslinks (kmdev-stream://...) ----------
@@ -215,6 +339,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('window-all-closed', () => {
     updater.stop();
+    audio.stop();
     app.quit();
   });
 }

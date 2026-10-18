@@ -1,18 +1,38 @@
 import {
-  RESOLUTIONS, FPS_OPTIONS, AUDIO_BITRATES, PRESETS, PRESET_LABELS,
+  RESOLUTIONS, FPS_OPTIONS, AUDIO_BITRATES, PRESETS,
   BITRATE_MIN, BITRATE_MAX, BITRATE_STEP, matchPreset, videoConstraints
 } from './presets.js';
-import { Signaling, HostSession, ViewerSession, SFU_ID } from './rtc.js';
+import { Signaling, HostSession, SFU_ID } from './rtc.js';
 import { parseInvite, setupInvite, watchUrl } from './invite.js';
+import { TileManager } from './tiles.js';
+import { AppAudio } from './appaudio.js';
+import { icon, hydrateIcons } from './icons.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 
+const CODE_LEN = 6;
+const JOIN_HINT = 'Oder einfach einen Einladungslink einfügen, mit Strg + V.';
+const PRIVATE_HINT = 'Stream gefunden. Er ist privat, deshalb brauchst du das Passwort.';
+
+// Die vier Qualitaetsstufen der Oberflaeche. Weitere Aufloesungen gibt es unter „Erweitert“.
+const QUALITY = [['720', 'Flüssig'], ['1080', 'Scharf'], ['source', 'Maximal'], ['presentation', 'Präsentation']];
+
 let settings = null;
 let captureStream = null;   // aktueller MediaStream der Quelle
-let host = null;            // { sig, session, room }
-let viewer = null;          // { sig, session }
+let host = null;            // { sig, session, room, since }
+let tiles = null;           // TileManager (Zuschauen)
 let updateState = { state: 'idle' };
+let browsing = false;       // Zuschauen: Startseite trotz offener Streams zeigen
+let rooms = [];             // zuletzt geladene Stream-Liste
+let joinCode = '';
+let joinPwNeeded = false;
+const appAudio = new AppAudio();
+
+const preview = document.createElement('video');
+preview.autoplay = true;
+preview.muted = true;
+preview.playsInline = true;
 
 /* ---------- Hilfen ---------- */
 
@@ -38,6 +58,72 @@ function displayName() {
   return settings.displayName || 'Gast';
 }
 
+// Feste Farbe pro Name (fuer Avatare).
+function colorFor(text) {
+  let h = 0;
+  for (const ch of String(text)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${h}, 60%, 66%)`;
+}
+
+function initial(name) {
+  return esc(String(name || '?').slice(0, 1).toUpperCase());
+}
+
+function qualitySub(key) {
+  const p = PRESETS[key];
+  if (key === 'presentation') return `Text · ${p.fps} fps`;
+  return `${p.resolution === 'source' ? 'Quelle' : `${p.resolution}p`} · ${p.fps}`;
+}
+
+// Umschalter mit .active an Tabs (Panel, Einstellungen).
+function wireTabs(tabsEl, panes, attr = 'tab') {
+  tabsEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-' + attr + ']');
+    if (b) selectTab(tabsEl, panes, b.dataset[attr], attr);
+  });
+}
+
+function selectTab(tabsEl, panes, name, attr = 'tab') {
+  for (const b of tabsEl.querySelectorAll('button')) b.classList.toggle('active', b.dataset[attr] === name);
+  for (const p of panes) p.classList.toggle('active', p.dataset.pane === name);
+}
+
+/* ---------- Navigation ---------- */
+
+function currentPage() {
+  return $('.page.active').id.replace('page-', '');
+}
+
+function showPage(page) {
+  for (const b of $$('#nav .nav-item')) b.classList.toggle('active', b.dataset.page === page);
+  for (const p of $$('.page')) p.classList.toggle('active', p.id === `page-${page}`);
+  if (page === 'watch') renderWatch();
+  if (page === 'send' && !host) loadSources();
+}
+
+function renderNav() {
+  $('#navLive').hidden = !host;
+  const n = tiles ? tiles.size : 0;
+  $('#navTiles').hidden = n === 0;
+  $('#navTiles').textContent = n;
+  $('#btnCloseAll').disabled = n === 0;
+  for (const el of $$('#roomList .room-card')) el.classList.toggle('open', !!tiles && tiles.has(el.dataset.code));
+  renderWatch();
+}
+
+function renderUser(state, text) {
+  const av = $('#avatar');
+  av.textContent = displayName().slice(0, 1).toUpperCase();
+  av.style.background = colorFor(displayName());
+  av.title = `${displayName()} – Einstellungen`;
+  if (state !== undefined) {
+    const el = $('#userStatus');
+    el.classList.toggle('ok', state === 'ok');
+    el.classList.toggle('bad', state === 'bad');
+    el.lastElementChild.textContent = text;
+  }
+}
+
 /* ---------- Segment-Buttons ---------- */
 
 function buildSeg(el, options, getValue, onPick) {
@@ -48,6 +134,14 @@ function buildSeg(el, options, getValue, onPick) {
     b.textContent = label;
     el.appendChild(b);
   }
+  wireSeg(el, getValue, onPick);
+}
+
+// Liste mit Radiopunkt, Titel und Zusatz (Qualitaet).
+function buildRadio(el, options, getValue, onPick) {
+  el.innerHTML = options.map(([value, title, sub]) =>
+    `<button data-v="${esc(value)}"><span class="radio"></span><span class="rt">${esc(title)}</span>${sub ? `<span class="rs">${esc(sub)}</span>` : ''}</button>`
+  ).join('');
   wireSeg(el, getValue, onPick);
 }
 
@@ -70,13 +164,15 @@ function refreshSeg(el) {
 const segs = {};
 
 function initPanel() {
+  const pickPreset = (v) => {
+    settings.preset = v;
+    Object.assign(settings, PRESETS[v]);
+    onSettingsChanged({ constraints: true });
+  };
   segs.preset = $('#segPreset');
-  buildSeg(segs.preset, Object.keys(PRESETS).map((k) => [k, PRESET_LABELS[k]]),
-    () => settings.preset ?? '', (v) => {
-      settings.preset = v;
-      Object.assign(settings, PRESETS[v]);
-      onSettingsChanged({ constraints: true });
-    });
+  buildRadio(segs.preset, QUALITY.map(([k, t]) => [k, t, qualitySub(k)]), () => settings.preset ?? '', pickPreset);
+  segs.presetS = $('#segPresetS');
+  buildSeg(segs.presetS, QUALITY, () => settings.preset ?? '', pickPreset);
 
   segs.resolution = $('#segResolution');
   buildSeg(segs.resolution, Object.keys(RESOLUTIONS).map((k) => [k, k === 'source' ? 'Quelle' : k]),
@@ -86,32 +182,80 @@ function initPanel() {
   buildSeg(segs.fps, FPS_OPTIONS.map((f) => [f, String(f)]),
     () => settings.fps, (v) => { settings.fps = Number(v); onSettingsChanged({ constraints: true, represet: true }); });
 
+  const pickAudioBitrate = (v) => { settings.audioBitrate = Number(v); onSettingsChanged(); };
   segs.audioBitrate = $('#segAudioBitrate');
-  buildSeg(segs.audioBitrate, AUDIO_BITRATES.map((b) => [b, String(b)]),
-    () => settings.audioBitrate, (v) => { settings.audioBitrate = Number(v); onSettingsChanged(); });
+  buildSeg(segs.audioBitrate, AUDIO_BITRATES.map((b) => [b, String(b)]), () => settings.audioBitrate, pickAudioBitrate);
+  segs.audioBitrateS = $('#segAudioBitrateS');
+  buildSeg(segs.audioBitrateS, AUDIO_BITRATES.map((b) => [b, String(b)]), () => settings.audioBitrate, pickAudioBitrate);
 
+  const pickPrivacy = (v) => { settings.privacy = v; onSettingsChanged({ room: true }); };
   segs.privacy = $('#segPrivacy');
-  wireSeg(segs.privacy, () => settings.privacy, (v) => { settings.privacy = v; onSettingsChanged({ room: true }); });
+  wireSeg(segs.privacy, () => settings.privacy, pickPrivacy);
+  segs.privacyS = $('#segPrivacyS');
+  wireSeg(segs.privacyS, () => settings.privacy, pickPrivacy);
 
-  segs.codec = $('#segCodec');
-  wireSeg(segs.codec, () => settings.codec, (v) => {
+  const pickCodec = (v) => {
     settings.codec = v;
     onSettingsChanged();
     if (host) toast('Codec gilt für neu verbundene Zuschauer.');
-  });
+  };
+  segs.codec = $('#segCodec');
+  wireSeg(segs.codec, () => settings.codec, pickCodec);
+  segs.codecS = $('#segCodecS');
+  wireSeg(segs.codecS, () => settings.codec, pickCodec);
 
-  segs.mode = $('#segMode');
-  wireSeg(segs.mode, () => settings.connectionMode, (v) => {
+  const pickMode = (v) => {
     settings.connectionMode = v;
     onSettingsChanged();
     if (host && host.session.mode !== v) toast('Der Verbindungsmodus gilt ab dem nächsten Streamstart.', 3500);
+  };
+  segs.mode = $('#segMode');
+  wireSeg(segs.mode, () => settings.connectionMode, pickMode);
+  segs.modeS = $('#segModeS');
+  wireSeg(segs.modeS, () => settings.connectionMode, pickMode);
+
+  segs.audioMode = $('#segAudioMode');
+  wireSeg(segs.audioMode, () => settings.audioMode, (v) => {
+    settings.audioMode = v;
+    onAudioConfigChanged();
   });
 
-  $('#chkAppAudio').addEventListener('change', async (e) => {
-    settings.appAudio = e.target.checked;
-    // Ohne Audiospur in der Aufnahme muss neu aufgenommen werden.
-    if (settings.appAudio && captureStream && !captureStream.getAudioTracks().length) await recapture();
-    onSettingsChanged();
+  for (const id of ['#chkAppAudio', '#chkAppAudioS']) {
+    $(id).addEventListener('change', async (e) => {
+      settings.appAudio = e.target.checked;
+      await applyAppAudio();
+      onSettingsChanged();
+    });
+  }
+
+  $('#chkJoinSound').addEventListener('change', (e) => {
+    settings.joinSound = e.target.checked;
+    persist();
+    if (e.target.checked) playJoinChime();
+  });
+
+  $('#audioMaster').addEventListener('input', (e) => {
+    settings.audioMaster = Number(e.target.value);
+    onAudioConfigChanged();
+  });
+
+  // „hörbar“/„stumm“ antippen nimmt das Programm in die Auswahl auf oder heraus.
+  $('#appList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sel]');
+    if (!b || b.disabled) return;
+    const exe = b.dataset.sel;
+    const sel = new Set(settings.audioSelected);
+    if (sel.has(exe)) sel.delete(exe);
+    else sel.add(exe);
+    settings.audioSelected = [...sel];
+    onAudioConfigChanged();
+  });
+  $('#appList').addEventListener('input', (e) => {
+    const exe = e.target.dataset.vol;
+    if (!exe) return;
+    settings.audioVolumes = { ...settings.audioVolumes, [exe]: Number(e.target.value) };
+    e.target.title = `Lautstärke ${Math.round(Number(e.target.value) * 100)} %`;
+    onAudioConfigChanged({ list: false });
   });
 
   const bitrate = $('#inpBitrate');
@@ -141,20 +285,19 @@ function initPanel() {
     onSettingsChanged({ room: true });
   });
 
-  const toggle = $('#toggleAdvanced');
-  toggle.addEventListener('click', () => {
-    const adv = $('#advanced');
-    adv.hidden = !adv.hidden;
-    toggle.classList.toggle('collapsed', adv.hidden);
-  });
+  wireTabs($('#panelTabs'), $$('#settingsPanel .pane'));
 }
 
 function renderPanel() {
   for (const el of Object.values(segs)) refreshSeg(el);
   $('#chkAppAudio').checked = !!settings.appAudio;
+  $('#chkAppAudioS').checked = !!settings.appAudio;
+  $('#chkJoinSound').checked = settings.joinSound !== false;
   $('#inpBitrate').value = settings.bitrate;
   $('#inpLimit').value = settings.viewerLimit;
-  $('#inpTitle').value = settings.title || '';
+  if (document.activeElement !== $('#inpTitle')) $('#inpTitle').value = settings.title || '';
+  $('#audioMaster').value = settings.audioMaster;
+  $('#audioMasterVal').textContent = `${Math.round(settings.audioMaster * 100)} %`;
   renderUploadEstimate();
 }
 
@@ -189,66 +332,232 @@ async function onSettingsChanged({ constraints = false, represet = false, room =
 
 function renderUploadEstimate() {
   const el = $('#uploadEst');
+  const info = $('#liveInfo');
   const perViewer = settings.bitrate + (settings.appAudio ? settings.audioBitrate : 0);
+  const mbit = (v) => (v / 1000).toFixed(1).replace('.', ',');
   const serverMode = host ? host.session.mode === 'server' : settings.connectionMode === 'server';
   if (serverMode) {
     // Im Server-Modus wird nur einmal hochgeladen, egal wie viele zuschauen.
-    el.textContent = `Upload ca. ${(perViewer / 1000).toFixed(1)} Mbit/s, der Server verteilt an alle`;
+    el.textContent = `Upload ca. ${mbit(perViewer)} Mbit/s · Server verteilt`;
+    info.textContent = `↑ ${mbit(perViewer)} Mbit/s · Server`;
     el.classList.remove('warn');
+    info.classList.remove('warn');
     return;
   }
   const n = host ? host.session.uploadStreams : 0;
-  const total = (perViewer * Math.max(n, 1)) / 1000;
+  const total = perViewer * Math.max(n, 1);
+  const warn = n > 0 && total / 1000 > 40;
   el.textContent = n
-    ? `Upload ca. ${total.toFixed(1)} Mbit/s (${n} × ${(perViewer / 1000).toFixed(1)} Mbit/s)`
-    : `Pro Zuschauer ca. ${(perViewer / 1000).toFixed(1)} Mbit/s Upload`;
-  el.classList.toggle('warn', n > 0 && total > 40);
+    ? `Upload ca. ${mbit(total)} Mbit/s (${n} × ${mbit(perViewer)})`
+    : `ca. ${mbit(perViewer)} Mbit/s pro Zuschauer`;
+  info.textContent = n ? `↑ ${mbit(total)} Mbit/s · P2P` : 'P2P';
+  el.classList.toggle('warn', warn);
+  info.classList.toggle('warn', warn);
 }
 
-/* ---------- Quellen-Auswahl ---------- */
+/* ---------- Anwendungsaudio ---------- */
 
-let sourceType = 'screen';
-let sources = [];
-
-async function openSourcePicker() {
-  $('#sourceModal').hidden = false;
-  $('#sourceGrid').innerHTML = '<p class="muted">Lade Quellen…</p>';
-  sources = await window.api.getSources();
-  renderSources();
+function audioConfig() {
+  return {
+    mode: settings.audioMode,
+    master: settings.audioMaster,
+    selected: settings.audioSelected,
+    volumes: settings.audioVolumes
+  };
 }
 
-function renderSources() {
-  for (const b of $$('#sourceTabs button')) b.classList.toggle('active', b.dataset.type === sourceType);
-  const list = sources.filter((s) => s.type === sourceType);
-  const grid = $('#sourceGrid');
-  if (!list.length) {
-    grid.innerHTML = '<p class="muted">Keine Quellen gefunden.</p>';
+function onAudioConfigChanged({ list = true } = {}) {
+  renderPanel();
+  if (list) renderAppList();
+  persist();
+  if (appAudio.available) appAudio.configure(audioConfig());
+}
+
+// Startet/stoppt das Hilfsprogramm und haengt die Tonspur an die Aufnahme.
+async function applyAppAudio() {
+  if (settings.appAudio) {
+    await appAudio.start(audioConfig());
+    if (captureStream) {
+      if (appAudio.available) {
+        // Systemton-Spur (Rueckfall) durch die Anwendungsaudio-Spur ersetzen.
+        for (const t of captureStream.getAudioTracks()) {
+          if (t !== appAudio.track) { captureStream.removeTrack(t); t.stop(); }
+        }
+        if (!captureStream.getAudioTracks().length) captureStream.addTrack(appAudio.track);
+      } else if (!captureStream.getAudioTracks().length) {
+        await recapture(); // Rueckfall: Systemton ueber getDisplayMedia
+      }
+    }
+  } else {
+    appAudio.stop();
+  }
+  renderAppList();
+}
+
+function renderAppList() {
+  const box = $('#appAudioBox');
+  const st = appAudio.status.state;
+  box.hidden = !settings.appAudio;
+  const note = $('#audioNote');
+  const unsupported = st === 'unsupported' || st === 'missing' || st === 'error';
+  segs.audioMode.hidden = unsupported;
+  $('#appList').hidden = unsupported;
+  $('.vol-row.master').hidden = unsupported;
+  if (unsupported) {
+    note.textContent = `${appAudio.status.message || 'Anwendungsaudio nicht verfügbar.'} Es wird der gesamte Systemton übertragen.`;
     return;
   }
-  grid.innerHTML = list.map((s) => `
-    <button class="source" data-id="${esc(s.id)}">
-      ${s.thumbnail ? `<img class="thumb" src="${s.thumbnail}" alt="">` : '<div class="thumb"></div>'}
-      <div class="name">${s.icon ? `<img src="${s.icon}" alt="">` : ''}<span>${esc(s.name)}</span></div>
-    </button>`).join('');
+  const mode = settings.audioMode;
+  note.textContent = mode === 'all'
+    ? 'Alle Programme sind zu hören. Lautstärke pro Programm einstellbar.'
+    : 'Tippe auf „hörbar“ bzw. „stumm“, um ein Programm umzuschalten.';
+
+  // Laufende Programme mit Ton + (bei „Nur ausgewaehlte“) ausgewaehlte, die
+  // gerade nicht laufen. Stumm geschaltete, die nicht laufen, sind egal.
+  const apps = [...appAudio.apps];
+  if (mode === 'include') {
+    for (const exe of settings.audioSelected) {
+      if (!apps.some((a) => a.exe === exe)) apps.push({ exe, name: exe.replace(/\.exe$/i, ''), icon: null, gone: true });
+    }
+  }
+  apps.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const selected = new Set(settings.audioSelected);
+
+  // Das Hilfsprogramm meldet jede Sekunde neue Pegel. Hat sich sonst nichts
+  // geaendert, nur die Pegelbalken nachziehen - ein Neuaufbau wuerde sonst
+  // gerade gezogene Regler zuruecksetzen.
+  const signature = JSON.stringify([mode, settings.audioSelected, apps.map((a) => [a.exe, !!a.gone, !!a.icon])]);
+  const list = $('#appList');
+  if (list.dataset.signature === signature) {
+    for (const a of apps) {
+      const bar = list.querySelector(`.app-meter[data-exe="${CSS.escape(a.exe)}"] i`);
+      if (bar) bar.style.width = `${Math.round(Math.min(1, a.peak || 0) * 100)}%`;
+    }
+    return;
+  }
+  list.dataset.signature = signature;
+  list.innerHTML = apps.length
+    ? apps.map((a) => {
+      const vol = settings.audioVolumes[a.exe] ?? 1;
+      const isSel = selected.has(a.exe);
+      const audible = mode === 'all' || (mode === 'include' ? isSel : !isSel);
+      return `<div class="app-item ${audible ? '' : 'off'}" title="${esc(a.exe)}">
+        ${a.icon ? `<img src="${a.icon}" alt="">` : '<span class="app-noicon"></span>'}
+        <span class="app-name"><span>${esc(a.name)}${a.gone ? ' <span class="muted">(nicht aktiv)</span>' : ''}</span>
+          <span class="app-meter" data-exe="${esc(a.exe)}"><i style="width:${Math.round(Math.min(1, a.peak || 0) * 100)}%"></i></span></span>
+        <input type="range" min="0" max="1.5" step="0.01" value="${vol}" data-vol="${esc(a.exe)}" title="Lautstärke ${Math.round(vol * 100)} %">
+        <button class="app-pill" data-sel="${esc(a.exe)}" ${mode === 'all' ? 'disabled' : ''}>${icon(audible ? 'volume_up' : 'volume_off')}${audible ? 'hörbar' : 'stumm'}</button>
+      </div>`;
+    }).join('')
+    : '<p class="muted small">Gerade spielt kein Programm Ton ab.</p>';
+}
+
+/* ---------- Quellen ---------- */
+
+let sources = [];
+let selectedSourceId = null;
+let modalSourceType = 'screen';
+
+let setupSourceType = 'screen';
+
+function sourceCard(s) {
+  return `<button class="source ${s.id === selectedSourceId ? 'sel' : ''}" data-id="${esc(s.id)}" title="${esc(s.name)}">
+    <div class="thumb">${s.thumbnail ? `<img src="${s.thumbnail}" alt="">` : ''}
+      <span class="kind">${s.type === 'screen' ? 'Bildschirm' : 'Fenster'}</span>
+      <span class="radio"></span></div>
+    <span class="name">${s.icon ? `<img src="${s.icon}" alt="">` : ''}<span>${esc(s.name)}</span></span>
+  </button>`;
+}
+
+async function loadSources() {
+  const grid = $('#sourceGrid');
+  if (!sources.length) grid.innerHTML = '<p class="source-empty">Lade Quellen…</p>';
+  sources = await window.api.getSources();
+  renderSourceGrid();
+}
+
+function renderSourceGrid() {
+  for (const b of $$('#setupSourceTabs button')) b.classList.toggle('active', b.dataset.type === setupSourceType);
+  const list = sources.filter((s) => s.type === setupSourceType);
+  $('#sourceGrid').innerHTML = list.length
+    ? list.map(sourceCard).join('')
+    : `<p class="source-empty">${setupSourceType === 'screen' ? 'Keine Bildschirme gefunden.' : 'Keine Fenster gefunden.'}</p>`;
+  placePreview();
+}
+
+// Sprach-Chats sind standardmaessig stumm, egal welche Quelle.
+const VOICE_APPS = ['discord.exe', 'discordptb.exe', 'discordcanary.exe', 'ts3client_win64.exe', 'ts3client_win32.exe', 'teamspeak.exe'];
+
+// Vorauswahl beim Wechsel der Quelle: Fenster -> nur der Ton dieses Programms,
+// Bildschirm -> alle Programme ausser Sprach-Chats. Danach frei aenderbar.
+async function applyAudioDefaults(source) {
+  if (!source) return;
+  let exe = null;
+  if (source.type === 'window') exe = await window.api.windowExe(source.id).catch(() => null);
+  if (exe && !VOICE_APPS.includes(exe)) {
+    settings.audioMode = 'include';
+    settings.audioSelected = [exe];
+  } else {
+    settings.audioMode = 'exclude';
+    settings.audioSelected = [...VOICE_APPS];
+  }
+  onAudioConfigChanged();
+}
+
+async function openSourceModal() {
+  $('#sourceModal').hidden = false;
+  $('#sourceModalGrid').innerHTML = '<p class="source-empty">Lade Quellen…</p>';
+  sources = await window.api.getSources();
+  renderSourceModal();
+}
+
+function renderSourceModal() {
+  for (const b of $$('#sourceTabs button')) b.classList.toggle('active', b.dataset.type === modalSourceType);
+  const list = sources.filter((s) => s.type === modalSourceType);
+  $('#sourceModalGrid').innerHTML = list.length ? list.map(sourceCard).join('') : '<p class="source-empty">Keine Quellen gefunden.</p>';
 }
 
 async function pickSource(id) {
   $('#sourceModal').hidden = true;
+  selectedSourceId = id;
+  const source = sources.find((s) => s.id === id);
+  if (source) setupSourceType = source.type;
+  renderSourceGrid();
   await window.api.selectSource(id);
+  applyAudioDefaults(source);
   await recapture();
 }
 
+// Die eine Vorschau wandert zwischen ausgewaehlter Quellen-Karte und Live-Buehne.
+function placePreview() {
+  const target = host
+    ? $('#liveStage')
+    : $(`#sourceGrid .source.sel .thumb`);
+  if (!captureStream || !target) {
+    preview.remove();
+    return;
+  }
+  if (preview.parentElement !== target) {
+    target.prepend(preview);
+    preview.play().catch(() => {});
+  }
+}
+
 async function recapture() {
+  // Mit Anwendungsaudio kommt der Ton vom Hilfsprogramm, sonst als Rueckfall
+  // der gesamte Systemton ueber getDisplayMedia.
+  const helper = settings.appAudio && appAudio.available;
   let stream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: videoConstraints(settings),
-      audio: !!settings.appAudio
+      audio: !!settings.appAudio && !helper
     });
   } catch (e) {
     toast('Aufnahme fehlgeschlagen: ' + e.message, 4000);
     return;
   }
+  if (helper) stream.addTrack(appAudio.track);
   const track = stream.getVideoTracks()[0];
   track.contentHint = settings.preset === 'presentation' ? 'detail' : 'motion';
   // Fenster geschlossen / Bildschirm getrennt -> Quelle ist weg.
@@ -263,23 +572,51 @@ async function recapture() {
   const old = captureStream;
   setCaptureStream(stream);
   if (host) await host.session.replaceStream(stream);
-  if (old) old.getTracks().forEach((t) => t.stop());
+  // Die Anwendungsaudio-Spur wird weiterverwendet, nicht stoppen.
+  if (old) old.getTracks().forEach((t) => { if (t !== appAudio.track) t.stop(); });
 }
 
 function setCaptureStream(stream) {
   captureStream = stream;
-  $('#preview').srcObject = stream;
-  $('#previewEmpty').hidden = !!stream;
-  $('#btnChangeSource').disabled = !stream;
+  preview.srcObject = stream;
   $('#btnStart').disabled = !stream || !!host;
+  if (!stream) {
+    selectedSourceId = null;
+    renderSourceGrid();
+  }
+  placePreview();
 }
 
 /* ---------- Senden ---------- */
 
+let liveTimer = null;
+
+function renderLiveTimer() {
+  const s = host ? Math.floor((Date.now() - host.since) / 1000) : 0;
+  const pad = (n) => String(n).padStart(2, '0');
+  $('#liveTimer').textContent = `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+}
+
+function renderSendView() {
+  const live = !!host;
+  $('#sendSetup').hidden = live;
+  $('#sendLive').hidden = !live;
+  $('#panelFoot').hidden = live;
+  if (!live) {
+    $('#viewerPop').hidden = true;
+    $('#btnViewers').classList.remove('open');
+  }
+  clearInterval(liveTimer);
+  if (live) liveTimer = setInterval(renderLiveTimer, 1000);
+  renderLiveTimer();
+  placePreview();
+}
+
 async function startHosting() {
   if (!captureStream || host || !requireServer()) return;
-  $('#btnStart').disabled = true;
-  $('#sendStatus').textContent = 'Verbinde mit Server…';
+  const btn = $('#btnStart');
+  btn.disabled = true;
+  btn.lastChild.textContent = 'Verbinde…';
   const sig = new Signaling(settings.serverUrl);
   try {
     await sig.connect();
@@ -295,7 +632,7 @@ async function startHosting() {
     }, 'hosted');
 
     const session = new HostSession({ signaling: sig, iceServers: res.iceServers, stream: captureStream, settings, mode: res.mode });
-    host = { sig, session, room: res.room };
+    host = { sig, session, room: res.room, since: Date.now() };
     sig.on('sfu-lost', () => {
       if (!host || host.sig !== sig) return;
       toast('Verbindung zum Medien-Server verloren. Bitte den Stream neu starten.', 6000);
@@ -305,25 +642,26 @@ async function startHosting() {
     sig.on('disconnected', () => {
       if (!host || host.sig !== sig) return;
       // Bestehende P2P-Verbindungen laufen weiter, nur neue Zuschauer gehen nicht.
-      $('#sendStatus').textContent = '⚠ Server-Verbindung verloren – neue Zuschauer können nicht beitreten.';
+      const msg = 'Server-Verbindung verloren – neue Zuschauer können nicht beitreten.';
+      $('#sendStatus').textContent = '⚠ ' + msg;
+      toast(msg, 5000);
     });
 
     $('#roomCode').textContent = res.room;
-    $('#modeBadge').textContent = res.mode === 'server' ? '🗄 Server-Modus' : '👥 P2P';
-    $('#roomBox').hidden = false;
-    $('#liveBadge').hidden = false;
-    $('#btnStart').hidden = true;
-    $('#btnStop').hidden = false;
     $('#sendStatus').textContent = '';
     window.api.setStreaming(true);
+    renderSendView();
     renderViewers();
     renderUpdateUi();
+    renderNav();
+    setTimeout(refreshRooms, 500);
   } catch (e) {
     sig.close();
-    $('#sendStatus').textContent = '';
-    $('#btnStart').disabled = false;
+    btn.disabled = false;
     toast('Start fehlgeschlagen: ' + e.message, 5000);
-    if (e.code === 'bad_key') openAppSettings();
+    if (e.code === 'bad_key') openAppSettings('connection');
+  } finally {
+    btn.lastChild.textContent = 'Live gehen';
   }
 }
 
@@ -332,20 +670,50 @@ function stopHosting() {
   host.session.stop();
   host.sig.close();
   host = null;
-  $('#roomBox').hidden = true;
-  $('#liveBadge').hidden = true;
-  $('#btnStart').hidden = false;
-  $('#btnStop').hidden = true;
   $('#btnStart').disabled = !captureStream;
   $('#sendStatus').textContent = '';
   window.api.setStreaming(false);
+  renderSendView();
   renderViewers();
   renderUpdateUi();
+  renderNav();
+  setTimeout(refreshRooms, 500);
 }
+
+// Kurzer Zwei-Ton-Gong, wenn jemand dem eigenen Stream beitritt.
+let chimeCtx = null;
+function playJoinChime() {
+  try {
+    chimeCtx = chimeCtx || new AudioContext();
+    const t0 = chimeCtx.currentTime + 0.02;
+    [[784, 0], [1175, 0.12]].forEach(([freq, delay]) => {
+      const osc = chimeCtx.createOscillator();
+      const gain = chimeCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, t0 + delay);
+      gain.gain.linearRampToValueAtTime(0.18, t0 + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + delay + 0.45);
+      osc.connect(gain).connect(chimeCtx.destination);
+      osc.start(t0 + delay);
+      osc.stop(t0 + delay + 0.5);
+    });
+  } catch (e) {
+    console.warn('chime', e);
+  }
+}
+
+let knownViewers = new Set();
 
 function renderViewers() {
   const list = host ? host.session.viewerList() : [];
-  $('#viewerCount').textContent = host ? host.session.viewerCount : 0;
+  const ids = list.filter((v) => !v.server).map((v) => v.id);
+  if (host && settings.joinSound !== false && ids.some((id) => !knownViewers.has(id))) playJoinChime();
+  knownViewers = new Set(ids);
+  const n = host ? host.session.viewerCount : 0;
+  $('#viewerCount').textContent = `${n} ${n === 1 ? 'schaut' : 'schauen'} zu`;
+  $('#viewerFaces').innerHTML = list.filter((v) => !v.server).slice(0, 3)
+    .map((v) => `<span class="face" style="background:${colorFor(v.name)}">${initial(v.name)}</span>`).join('');
   $('#noViewers').hidden = list.length > 0;
   $('#viewerTable').hidden = list.length === 0;
   $('#viewerTable tbody').innerHTML = list.map((v) => {
@@ -360,102 +728,170 @@ function renderViewers() {
       <td>${s.kbps != null ? `${s.kbps} kbps` : '–'}${s.codec ? ` <span class="muted">${esc(s.codec)}</span>` : ''}</td>
       <td>${s.rtt != null ? `${s.rtt} ms` : '–'}</td>
       <td>${s.relay ? 'TURN' : (s.rtt != null ? 'direkt' : '–')}</td>
-      <td>${v.server ? '' : `<button class="ghost" data-kick="${esc(v.id)}" title="Entfernen">✕</button>`}</td>
+      <td>${v.server ? '' : `<button class="icon-btn" data-kick="${esc(v.id)}" title="Entfernen">${icon('close')}</button>`}</td>
     </tr>`;
   }).join('');
   renderUploadEstimate();
 }
 
-/* ---------- Zuschauen ---------- */
+/* ---------- Zuschauen: Startseite ---------- */
 
-async function refreshRooms() {
-  const box = $('#roomList');
-  if (!settings.serverUrl) {
-    box.innerHTML = '<p class="muted">Keine Server-Adresse eingetragen (⚙).</p>';
+function renderWatch() {
+  const n = tiles ? tiles.size : 0;
+  if (n === 0) browsing = false;
+  const stage = n > 0 && !browsing;
+  $('#watchHome').hidden = stage;
+  $('#watchStage').hidden = !stage;
+  $('#btnBackToTiles').hidden = n === 0;
+  if (stage && currentPage() === 'watch') tiles.arrange();
+}
+
+function setHint(text, error = false) {
+  const el = $('#joinError');
+  el.textContent = text || JOIN_HINT;
+  el.classList.toggle('error', !!error);
+}
+
+function renderCodeBoxes() {
+  const boxes = [];
+  for (let i = 0; i < CODE_LEN; i++) {
+    const ch = joinCode[i] || '';
+    const cur = i === joinCode.length;
+    boxes.push(`<div class="code-box-c ${ch ? 'filled' : ''} ${cur ? 'cur' : ''}">${ch ? esc(ch) : (cur ? '<span class="caret"></span>' : '')}</div>`);
+  }
+  $('#codeBoxes').innerHTML = boxes.join('');
+}
+
+function setJoinCode(code) {
+  joinCode = code;
+  $('#inpJoinCode').value = code;
+  if (code.length < CODE_LEN) joinPwNeeded = false;
+  renderCodeBoxes();
+  renderJoinCard();
+}
+
+function renderJoinCard() {
+  const card = $('#joinCard');
+  const ready = joinCode.length === CODE_LEN;
+  card.hidden = !ready;
+  if (!ready) {
+    if (!$('#joinError').classList.contains('error')) setHint();
     return;
   }
-  box.innerHTML = '<p class="muted">Lade…</p>';
+  const r = rooms.find((x) => x.code === joinCode);
+  $('#joinTitle').textContent = r ? (r.title || 'Ohne Titel') : `Stream ${joinCode}`;
+  $('#joinMeta').textContent = r
+    ? `${r.hostName} · ${r.viewers} ${r.viewers === 1 ? 'schaut' : 'schauen'} zu`
+    : 'Nicht in der öffentlichen Liste';
+  const pw = joinPwNeeded || !!(r && r.hasPassword);
+  $('#joinPwBox').hidden = !pw;
+  if (pw) setHint(PRIVATE_HINT);
+}
+
+function onCodeInput() {
+  const raw = $('#inpJoinCode').value;
+  if (/[:/]/.test(raw)) {
+    if (parseInvite(raw)) {
+      setJoinCode('');
+      handleInvite(raw);
+    } else {
+      setJoinCode('');
+      setHint('Das ist kein gültiger Einladungslink.', true);
+    }
+    return;
+  }
+  setHint();
+  setJoinCode(raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, CODE_LEN));
+}
+
+function joinNow() {
+  if (joinCode.length !== CODE_LEN) return;
+  openStream(joinCode, $('#inpJoinPassword').value);
+}
+
+let roomsTimer = null;
+async function refreshRooms() {
+  clearTimeout(roomsTimer);
+  // Liste regelmaessig auffrischen, solange das Fenster sichtbar ist.
+  roomsTimer = setTimeout(refreshRooms, 15000);
+  const box = $('#roomList');
+  if (!settings.serverUrl) {
+    box.innerHTML = '<div class="room-empty">Kein Server eingerichtet – öffne die Einstellungen und füge eine Einladung ein.</div>';
+    return;
+  }
+  if (document.hidden) return;
   const sig = new Signaling(settings.serverUrl);
   try {
     await sig.connect();
     const res = await sig.request({ type: 'list', key: settings.accessKey }, 'rooms');
-    box.innerHTML = res.rooms.length
-      ? res.rooms.map((r) => `
-        <div class="room-item">
-          <div style="flex:1;min-width:0">
-            <div class="title">${esc(r.title || 'Ohne Titel')} ${r.hasPassword ? '🔒' : ''}</div>
-            <div class="meta">${esc(r.hostName)} · ${r.viewers}/${r.viewerLimit} Zuschauer · seit ${new Date(r.since).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
+    rooms = res.rooms;
+    box.innerHTML = rooms.length
+      ? rooms.map((r) => `
+        <button class="room-card" data-code="${esc(r.code)}" data-pw="${r.hasPassword ? 1 : 0}" title="${esc(r.title || 'Ohne Titel')} · Code ${esc(r.code)}">
+          <div class="rc-thumb">
+            <span class="rc-live">LIVE</span>
+            <span class="rc-open">GEÖFFNET</span>
+            <span class="rc-viewers">${r.viewers} ${r.viewers === 1 ? 'schaut' : 'schauen'}</span>
           </div>
-          <button class="primary" data-join="${esc(r.code)}" data-pw="${r.hasPassword ? 1 : 0}">Ansehen</button>
-        </div>`).join('')
-      : '<p class="muted">Gerade keine öffentlichen Streams.</p>';
+          <div class="rc-info">
+            <span class="rc-av" style="background:${colorFor(r.hostName)}">${initial(r.hostName)}</span>
+            <span class="rc-text"><span class="rc-title">${esc(r.title || 'Ohne Titel')}</span><span class="rc-name">${esc(r.hostName)}</span></span>
+            ${r.hasPassword ? `<span class="rc-lock">${icon('lock')}</span>` : ''}
+          </div>
+        </button>`).join('')
+      : '<div class="room-empty">Gerade ist niemand öffentlich live.</div>';
+    renderUser('ok', 'verbunden');
+    renderJoinCard();
   } catch (e) {
-    box.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    box.innerHTML = `<div class="room-empty error">${esc(e.message)}</div>`;
+    renderUser('bad', e.code === 'bad_key' ? 'Schlüssel fehlt' : 'nicht erreichbar');
   } finally {
     sig.close();
+    renderNav();
   }
 }
 
-async function joinRoom(code, password, serverUrl = settings.serverUrl) {
-  if (viewer) return;
+async function openStream(room, password = '', serverUrl = settings.serverUrl) {
   if (!serverUrl && !requireServer()) return;
-  $('#joinError').textContent = '';
-  const sig = new Signaling(serverUrl);
+  const code = String(room || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!code) return;
+  browsing = false;
+  showPage('watch');
   try {
-    await sig.connect();
-    const res = await sig.request({ type: 'join', room: code, password, name: displayName() }, 'joined');
-    const session = new ViewerSession({ signaling: sig, iceServers: res.iceServers, hostId: res.hostId });
-    viewer = { sig, session };
-
-    $('#watchLobby').hidden = true;
-    $('#player').hidden = false;
-    $('#playerOverlay').hidden = false;
-    $('#playerOverlay').textContent = 'Verbinde…';
-    $('#playerTitle').textContent = `${res.title || 'Stream'} – ${res.hostName}`;
-    const video = $('#remoteVideo');
-    video.volume = Number($('#volume').value);
-
-    session.addEventListener('track', (e) => {
-      video.srcObject = e.detail;
-      video.play().catch(() => {});
-    });
-    session.addEventListener('state', (e) => {
-      const st = e.detail;
-      $('#playerOverlay').hidden = st === 'connected';
-      if (st === 'failed') $('#playerOverlay').textContent = 'Verbindung fehlgeschlagen (Firewall/NAT). Probier den Server-Modus oder prüfe den TURN-Server.';
-      else if (st === 'disconnected') $('#playerOverlay').textContent = 'Verbindung unterbrochen…';
-    });
-    session.addEventListener('stats', (e) => {
-      const s = e.detail;
-      $('#playerStats').textContent = [
-        s.width ? `${s.width}×${s.height}` : null,
-        s.fps != null ? `${s.fps} fps` : null,
-        s.kbps != null ? `${(s.kbps / 1000).toFixed(1)} Mbit/s` : null,
-        s.codec || null,
-        s.rtt != null ? `${s.rtt} ms` : null,
-        s.relay ? 'TURN' : null,
-        res.mode === 'server' ? 'über Server' : null
-      ].filter(Boolean).join(' · ');
-    });
-    sig.on('host-left', () => { toast('Der Stream wurde beendet.', 4000); leaveRoom(); });
-    sig.on('kicked', () => { toast('Du wurdest vom Host entfernt.', 4000); leaveRoom(); });
+    await tiles.open({ serverUrl, room: code, password, name: displayName() });
+    setJoinCode('');
+    $('#inpJoinPassword').value = '';
+    setHint();
   } catch (e) {
-    sig.close();
-    $('#joinError').textContent = e.message;
+    // Zurueck auf die Startseite, damit Fehler bzw. Passwortfeld sichtbar sind.
+    browsing = true;
+    if (e.code === 'bad_password') {
+      joinPwNeeded = true;
+      joinCode = code.slice(0, CODE_LEN);
+      $('#inpJoinCode').value = joinCode;
+      renderCodeBoxes();
+      renderJoinCard();
+      setHint(password ? e.message : PRIVATE_HINT, !!password);
+      $('#inpJoinPassword').focus();
+    } else {
+      setHint(e.message, true);
+      toast(e.message, 3500);
+    }
   }
+  renderNav();
 }
 
-function leaveRoom() {
-  if (!viewer) return;
-  viewer.session.stop();
-  viewer.sig.close();
-  viewer = null;
-  if (document.fullscreenElement) document.exitFullscreen();
-  $('#remoteVideo').srcObject = null;
-  $('#player').hidden = true;
-  $('#watchLobby').hidden = false;
-  $('#playerStats').textContent = '';
-  refreshRooms();
+function popOut(tile) {
+  window.api.openPopout({
+    serverUrl: tile.serverUrl,
+    room: tile.room,
+    password: tile.password,
+    name: displayName(),
+    title: `${tile.title} – ${tile.hostName}`,
+    volume: tile.volume,
+    muted: tile.muted
+  });
+  tiles.remove(tile);
 }
 
 /* ---------- Auto-Update ---------- */
@@ -477,7 +913,7 @@ function renderUpdateUi() {
   $('#updateStateText').textContent = text;
 
   badge.hidden = !['available', 'downloading'].includes(s.state);
-  badge.textContent = s.state === 'downloading' ? `Update ${s.percent ?? 0} %` : 'Update wird geladen';
+  badge.textContent = s.state === 'downloading' ? `Update ${s.percent ?? 0} %` : 'Update';
 
   banner.hidden = s.state !== 'ready';
   if (s.state === 'ready') {
@@ -491,15 +927,16 @@ function renderUpdateUi() {
 
 /* ---------- App-Einstellungen ---------- */
 
-async function openAppSettings() {
+async function openAppSettings(tab = 'account') {
   const info = await window.api.appInfo();
   $('#appVersion').textContent = info.version;
   $('#inpName').value = settings.displayName || '';
   $('#inpServer').value = settings.serverUrl || '';
   $('#inpAccessKey').value = settings.accessKey || '';
   $('#inpInvite').value = '';
-  $('#serverDetails').open = false;
   $('#btnCopyInvite').disabled = !settings.serverUrl;
+  selectTab($('#settingsTabs'), $$('#appSettingsModal .spane'), tab);
+  renderPanel();
   renderUpdateUi();
   $('#appSettingsModal').hidden = false;
   checkServer();
@@ -508,7 +945,11 @@ async function openAppSettings() {
 // Zeigt, ob Server und Zugangsschluessel passen und ob der Server-Modus geht.
 async function checkServer() {
   const el = $('#serverState');
-  if (!settings.serverUrl) { el.textContent = 'Noch kein Server eingerichtet.'; return; }
+  if (!settings.serverUrl) {
+    el.textContent = 'Noch kein Server eingerichtet.';
+    renderUser('bad', 'kein Server');
+    return;
+  }
   el.textContent = 'Prüfe Server…';
   const sig = new Signaling(settings.serverUrl);
   try {
@@ -517,8 +958,10 @@ async function checkServer() {
     el.textContent = !res.keyOk
       ? '⚠ Zugangsschlüssel fehlt oder ist falsch.'
       : `✓ Server verbunden${res.sfu ? ', Server-Modus verfügbar' : ', nur P2P'}`;
+    renderUser(res.keyOk ? 'ok' : 'bad', res.keyOk ? 'verbunden' : 'Schlüssel fehlt');
   } catch (e) {
     el.textContent = '⚠ ' + e.message;
+    renderUser('bad', 'nicht erreichbar');
   } finally {
     sig.close();
   }
@@ -539,8 +982,8 @@ function normalizeServerUrl(input) {
 // Ohne eingetragenen Server geht nichts – dann direkt die Einstellungen oeffnen.
 function requireServer() {
   if (settings.serverUrl) return true;
-  toast('Bitte zuerst die Server-Adresse eintragen.', 3500);
-  openAppSettings();
+  toast('Bitte zuerst den Server einrichten (Einladung einfügen).', 3500);
+  openAppSettings('connection');
   return false;
 }
 
@@ -558,10 +1001,12 @@ async function saveAppSettings() {
   const server = normalizeServerUrl($('#inpServer').value);
   if (server === null) {
     toast('Ungültige Server-Adresse.');
+    selectTab($('#settingsTabs'), $$('#appSettingsModal .spane'), 'connection');
     return;
   }
   if (!server) {
-    toast('Ohne Server-Adresse kann nicht gestreamt werden.');
+    toast('Ohne Server kann nicht gestreamt werden.');
+    selectTab($('#settingsTabs'), $$('#appSettingsModal .spane'), 'connection');
     return;
   }
   settings.displayName = $('#inpName').value.trim();
@@ -570,6 +1015,8 @@ async function saveAppSettings() {
   settings = await window.api.saveSettings(settings);
   $('#appSettingsModal').hidden = true;
   toast('Gespeichert.');
+  renderUser();
+  refreshRooms();
 }
 
 /* ---------- Einladungen (kmdev-stream://...) ---------- */
@@ -582,7 +1029,8 @@ async function handleInvite(text) {
     settings.accessKey = inv.key || '';
     settings = await window.api.saveSettings(settings);
     toast('Server aus Einladung eingerichtet.', 3500);
-    if (!settings.displayName) openAppSettings();
+    refreshRooms();
+    if (!settings.displayName) openAppSettings('account');
   } else if (inv.kind === 'join') {
     // Wer noch keinen Server hat, uebernimmt den aus dem Link (ohne Schluessel:
     // zum Zuschauen reicht der Stream-Code).
@@ -590,37 +1038,40 @@ async function handleInvite(text) {
       settings.serverUrl = inv.server;
       settings = await window.api.saveSettings(settings);
     }
-    if (viewer) leaveRoom();
-    $('#mainTabs button[data-tab="watch"]').click();
-    $('#inpJoinCode').value = inv.room;
-    joinRoom(inv.room, '', inv.server);
+    openStream(inv.room, '', inv.server);
   }
 }
 
 /* ---------- Verdrahtung ---------- */
 
 function wire() {
-  for (const b of $$('#mainTabs button')) {
-    b.addEventListener('click', () => {
-      for (const x of $$('#mainTabs button')) x.classList.toggle('active', x === b);
-      for (const t of $$('.tab')) t.classList.toggle('active', t.id === `tab-${b.dataset.tab}`);
-      if (b.dataset.tab === 'watch' && !viewer) refreshRooms();
-    });
-  }
+  for (const b of $$('#nav .nav-item')) b.addEventListener('click', () => showPage(b.dataset.page));
 
-  $('#btnPickSource').addEventListener('click', openSourcePicker);
-  $('#btnChangeSource').addEventListener('click', openSourcePicker);
+  // Quellen
+  $('#btnRefreshSources').addEventListener('click', loadSources);
+  $('#setupSourceTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    setupSourceType = b.dataset.type;
+    renderSourceGrid();
+  });
+  $('#sourceGrid').addEventListener('click', (e) => {
+    const b = e.target.closest('.source');
+    if (b && b.dataset.id !== selectedSourceId) pickSource(b.dataset.id);
+  });
+  $('#btnChangeSource').addEventListener('click', openSourceModal);
   $('#sourceTabs').addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    sourceType = b.dataset.type;
-    renderSources();
+    modalSourceType = b.dataset.type;
+    renderSourceModal();
   });
-  $('#sourceGrid').addEventListener('click', (e) => {
+  $('#sourceModalGrid').addEventListener('click', (e) => {
     const b = e.target.closest('.source');
     if (b) pickSource(b.dataset.id);
   });
 
+  // Senden
   $('#btnStart').addEventListener('click', startHosting);
   $('#btnStop').addEventListener('click', stopHosting);
   $('#btnCopyCode').addEventListener('click', () => {
@@ -632,54 +1083,105 @@ function wire() {
     navigator.clipboard.writeText(watchUrl(settings.serverUrl, host.room));
     toast('Link kopiert – öffnet den Stream im Browser oder in der App.', 3500);
   });
-  $('#btnCopyInvite').addEventListener('click', () => {
-    if (!settings.serverUrl) return;
-    navigator.clipboard.writeText(setupInvite(settings.serverUrl, settings.accessKey));
-    toast('Einladung kopiert. Enthält den Zugangsschlüssel – nur an Vertraute geben.', 4500);
+  $('#btnViewers').addEventListener('click', () => {
+    const pop = $('#viewerPop');
+    pop.hidden = !pop.hidden;
+    $('#btnViewers').classList.toggle('open', !pop.hidden);
   });
-  window.api.onInvite(handleInvite);
   $('#viewerTable').addEventListener('click', (e) => {
     const b = e.target.closest('[data-kick]');
     if (b && host && b.dataset.kick !== SFU_ID) host.session.kick(b.dataset.kick);
   });
 
-  $('#btnJoin').addEventListener('click', () => {
-    const value = $('#inpJoinCode').value.trim();
-    // Eingefuegter Link statt Code? Dann wie eine Einladung behandeln.
-    const inv = parseInvite(value);
-    if (inv) handleInvite(value);
-    else joinRoom(value, $('#inpJoinPassword').value);
+  // Zuschauen: Code oder eingefuegter Link
+  const code = $('#inpJoinCode');
+  code.addEventListener('input', onCodeInput);
+  code.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinNow(); });
+  code.addEventListener('focus', () => $('.code-entry').classList.add('focus'));
+  code.addEventListener('blur', () => $('.code-entry').classList.remove('focus'));
+  $('#inpJoinPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinNow(); });
+  $('#btnJoin').addEventListener('click', joinNow);
+  // Strg + V irgendwo auf der Startseite: Link oder Code uebernehmen.
+  document.addEventListener('paste', (e) => {
+    if (currentPage() !== 'watch' || $('#watchHome').hidden) return;
+    if (e.target.closest && e.target.closest('input, textarea')) return;
+    const text = e.clipboardData.getData('text');
+    if (!text) return;
+    e.preventDefault();
+    code.value = text.trim();
+    onCodeInput();
+    code.focus();
   });
-  $('#inpJoinCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
-  $('#inpJoinPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
+
   $('#btnRefreshRooms').addEventListener('click', refreshRooms);
   $('#roomList').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-join]');
-    if (!b) return;
-    if (b.dataset.pw === '1') {
-      $('#inpJoinCode').value = b.dataset.join;
-      $('#inpJoinPassword').focus();
-      $('#joinError').textContent = 'Dieser Stream braucht ein Passwort.';
+    const item = e.target.closest('.room-card');
+    if (!item) return;
+    if (tiles.has(item.dataset.code)) {
+      browsing = false;
+      renderWatch();
       return;
     }
-    joinRoom(b.dataset.join, '');
+    if (item.dataset.pw === '1') {
+      setJoinCode(item.dataset.code);
+      joinPwNeeded = true;
+      renderJoinCard();
+      $('#inpJoinPassword').focus();
+      return;
+    }
+    openStream(item.dataset.code);
   });
-  $('#btnLeave').addEventListener('click', leaveRoom);
-  $('#volume').addEventListener('input', (e) => { $('#remoteVideo').volume = Number(e.target.value); });
-  $('#btnFullscreen').addEventListener('click', () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else $('#player').requestFullscreen();
+  $('#btnBackToTiles').addEventListener('click', () => {
+    browsing = false;
+    renderWatch();
   });
-  $('#remoteVideo').addEventListener('dblclick', () => $('#btnFullscreen').click());
+  $('#btnAddStream').addEventListener('click', () => {
+    browsing = true;
+    renderWatch();
+    refreshRooms();
+    $('#inpJoinCode').focus();
+  });
 
-  $('#btnSettings').addEventListener('click', openAppSettings);
+  const pickLayout = (v) => {
+    settings.watchLayout = v;
+    tiles.setLayout(v);
+    refreshSeg(segs.layout);
+    refreshSeg(segs.layoutS);
+    persist();
+  };
+  segs.layout = $('#segLayout');
+  wireSeg(segs.layout, () => settings.watchLayout, pickLayout);
+  segs.layoutS = $('#segLayoutS');
+  wireSeg(segs.layoutS, () => settings.watchLayout, pickLayout);
+  $('#btnCloseAll').addEventListener('click', () => tiles.closeAll());
+
+  // Steuerleiste ausblenden, wenn die Maus ruht.
+  const stage = $('#watchStage');
+  let idleTimer = null;
+  stage.addEventListener('pointermove', () => {
+    stage.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => stage.classList.add('idle'), 2500);
+  });
+  stage.addEventListener('pointerleave', () => stage.classList.remove('idle'));
+
+  // Einstellungen
+  $('#btnSettings').addEventListener('click', () => openAppSettings());
+  $('#avatar').addEventListener('click', () => openAppSettings('account'));
+  wireTabs($('#settingsTabs'), $$('#appSettingsModal .spane'));
   $('#btnSaveAppSettings').addEventListener('click', saveAppSettings);
+  $('#btnCopyInvite').addEventListener('click', () => {
+    if (!settings.serverUrl) return;
+    navigator.clipboard.writeText(setupInvite(settings.serverUrl, settings.accessKey));
+    toast('Einladung kopiert. Enthält den Zugangsschlüssel – nur an Vertraute geben.', 4500);
+  });
   $('#btnCheckUpdate').addEventListener('click', async () => {
     updateState = await window.api.checkUpdate();
     renderUpdateUi();
   });
   $('#btnInstallUpdate').addEventListener('click', () => window.api.installUpdate());
-  $('#updateBadge').addEventListener('click', openAppSettings);
+  $('#updateBadge').addEventListener('click', () => openAppSettings('about'));
+  window.api.onInvite(handleInvite);
 
   for (const m of $$('.modal')) {
     m.addEventListener('click', (e) => {
@@ -687,28 +1189,62 @@ function wire() {
     });
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') for (const m of $$('.modal')) m.hidden = true;
+    if (e.key !== 'Escape') return;
+    for (const m of $$('.modal')) m.hidden = true;
+    $('#viewerPop').hidden = true;
+    $('#btnViewers').classList.remove('open');
   });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshRooms(); });
 
   window.api.onUpdate((s) => {
     updateState = s;
     renderUpdateUi();
   });
+
+  appAudio.addEventListener('apps', renderAppList);
+  appAudio.addEventListener('status', renderAppList);
+}
+
+function initTiles() {
+  tiles = new TileManager($('#tiles'));
+  tiles.setLayout(settings.watchLayout || 'grid');
+  tiles.addEventListener('change', renderNav);
+  tiles.addEventListener('popout', (e) => popOut(e.detail));
+  tiles.addEventListener('ended', (e) => toast(`${e.detail.tile.hostName || 'Stream'}: ${e.detail.message}`, 4000));
+  // Fokus per Doppelklick schaltet die Anordnung um -> Auswahl mitziehen.
+  tiles.addEventListener('layout', (e) => {
+    settings.watchLayout = e.detail;
+    refreshSeg(segs.layout);
+    refreshSeg(segs.layoutS);
+    persist();
+  });
 }
 
 async function init() {
+  hydrateIcons();
   settings = await window.api.getSettings();
   settings.codec = settings.codec || 'h264';
   if (settings.preset !== null && !PRESETS[settings.preset]) settings.preset = matchPreset(settings);
   initPanel();
+  initTiles();
   wire();
   renderPanel();
+  renderCodeBoxes();
+  renderSendView();
   renderViewers();
+  renderNav();
+  renderUser();
   updateState = await window.api.updateStatus();
   renderUpdateUi();
   const info = await window.api.appInfo();
   document.title = `KM-DEV Stream ${info.version}`;
-  if (!settings.displayName || !settings.serverUrl) setTimeout(openAppSettings, 300);
+  if (settings.appAudio) applyAppAudio();
+  else renderAppList();
+  loadSources();
+  refreshRooms();
+  if (!settings.displayName || !settings.serverUrl) {
+    setTimeout(() => openAppSettings(settings.displayName ? 'connection' : 'account'), 300);
+  }
 }
 
 init();

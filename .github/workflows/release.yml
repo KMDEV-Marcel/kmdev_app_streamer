@@ -30,6 +30,11 @@ jobs:
 
       - run: npm ci
 
+      # Anwendungsaudio-Hilfsprogramm (C++, WASAPI) - kommt mit in den Installer.
+      - name: Audio-Hilfsprogramm bauen
+        shell: pwsh
+        run: ./native/build.ps1
+
       - name: Bauen und veroeffentlichen
         run: npm run release
         env:

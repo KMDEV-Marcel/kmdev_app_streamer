@@ -225,10 +225,18 @@ if ($turnEnabled) {
     Write-Host '   TURN-Secret erzeugt.'
     $cfgChanged = $true
   }
+  # Gueltige IPv4? (TryParse allein akzeptiert auch Kurzformen wie "84".)
+  function Test-IPv4($s) {
+    $ip = $null
+    return ("$s" -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') -and [Net.IPAddress]::TryParse("$s", [ref]$ip)
+  }
+  if ($t.publicIp -and -not (Test-IPv4 $t.publicIp)) {
+    Write-Host "   turn.publicIp '$($t.publicIp)' ist ungueltig - ermittle neu."
+    Set-Prop $t 'publicIp' ''
+  }
   if (-not $t.publicIp) {
     # Oeffentliche IPv4 ermitteln. Ueber Hostnamen antwortet der Dienst bei
     # bevorzugtem IPv6 mit der IPv6-Adresse, daher IPv4-erzwingende Quellen.
-    $ipv4 = '^\d{1,3}(\.\d{1,3}){3}$'
     $found = $null
     foreach ($src in @(
         @{ Url = 'https://1.1.1.1/cdn-cgi/trace'; Pattern = '(?m)^ip=(\S+)\s*$' },
@@ -237,7 +245,11 @@ if ($turnEnabled) {
       try {
         $body = (Invoke-WebRequest $src.Url -UseBasicParsing -TimeoutSec 10).Content
         if ($body -is [byte[]]) { $body = [Text.Encoding]::ASCII.GetString($body) }
-        if ($body -match $src.Pattern -and $Matches[1] -match $ipv4) { $found = $Matches[1]; break }
+        # Treffer sofort sichern: ein weiteres -match wuerde $Matches ueberschreiben.
+        if ($body -match $src.Pattern) {
+          $candidate = $Matches[1]
+          if (Test-IPv4 $candidate) { $found = $candidate; break }
+        }
       } catch { }
     }
     if (-not $found) {

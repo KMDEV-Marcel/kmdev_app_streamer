@@ -23,6 +23,10 @@
   Pfad zu einer vorhandenen caddy.exe. Ohne Angabe wird die aktuelle Version
   von GitHub geladen (nach bin\caddy.exe).
 
+.PARAMETER HttpsPort
+  HTTPS-Port fuer Caddy vorgeben. Ohne Angabe: 443, oder - wenn 443 belegt ist
+  (z. B. IIS/Plesk) - der erste freie Cloudflare-Port aus 2053/2083/2087/2096.
+
 .PARAMETER UpdateCaddy
   bin\caddy.exe neu herunterladen, auch wenn sie schon existiert.
 #>
@@ -30,6 +34,7 @@ param(
   [string]$Node,
   [string]$Caddy,
   [switch]$UpdateCaddy,
+  [int]$HttpsPort,
   [switch]$OpenTurnPorts
 )
 
@@ -154,6 +159,46 @@ if ($caddyText -match 'reverse_proxy\s+127\.0\.0\.1:\d+') {
 }
 $env:KMDEV_SIGNAL_PORT = "$port"
 
+# ---------- HTTPS-Port fuer Caddy ----------
+# Laeuft auf dem Server schon ein Webserver auf 443 (IIS/Plesk, Apache ...),
+# kommt Caddy nicht an den Port. Dann nimmt Caddy einen der alternativen
+# HTTPS-Ports, die Cloudflare unterstuetzt; in Cloudflare leitet eine
+# Origin Rule den Hostnamen auf diesen Port um. Clients nutzen weiter 443.
+
+if ($caddyText -match '(?m)^(\S+?):443\s*\{') {
+  $caddyText = $caddyText -replace '(?m)^(\S+?):443(\s*\{)', '$1:{$KMDEV_HTTPS_PORT:443}$2'
+  [IO.File]::WriteAllText($caddyfilePath, $caddyText, [Text.UTF8Encoding]::new($false))
+  Write-Host '   Caddyfile auf {$KMDEV_HTTPS_PORT} umgestellt.'
+}
+$domain = if ($caddyText -match '(?m)^([A-Za-z0-9.-]+\.[A-Za-z]{2,}):') { $Matches[1] } else { $null }
+
+# Eigenes Caddy freigeben, damit es den Port nicht selbst blockiert.
+if (Get-Service 'KMDevStreamCaddy' -ErrorAction SilentlyContinue) { Stop-Service 'KMDevStreamCaddy' -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
+
+function Get-PortOwner([int]$p) {
+  $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $c) { return $null }
+  $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+  # PID 4 = "System" = http.sys, dahinter steckt IIS (auch bei Plesk).
+  if ($c.OwningProcess -eq 4) { return 'IIS/http.sys (z. B. Plesk)' }
+  if ($proc) { return "$($proc.ProcessName) (PID $($c.OwningProcess))" }
+  return "PID $($c.OwningProcess)"
+}
+
+$caddyPort = $null
+if ($HttpsPort) {
+  $caddyPort = $HttpsPort
+} else {
+  foreach ($p in 443, 2053, 2083, 2087, 2096) {
+    $owner = Get-PortOwner $p
+    if (-not $owner -and (Test-PortUsable $p $excluded)) { $caddyPort = $p; break }
+    Write-Host "   Port $p ist belegt: $owner"
+  }
+  if (-not $caddyPort) { throw 'Kein freier HTTPS-Port (443/2053/2083/2087/2096) gefunden. Mit -HttpsPort einen Port vorgeben.' }
+}
+$env:KMDEV_HTTPS_PORT = "$caddyPort"
+Write-Host "== HTTPS-Port fuer Caddy: $caddyPort"
+
 # ---------- Downloads ----------
 
 function Get-Verified($url, $target, $algorithm, $expected) {
@@ -271,7 +316,7 @@ Write-Host '== Dienste'
 Install-Svc 'KMDevStream' 'KMDev Stream Signaling' 'WebSocket-Signaling fuer KMDev Stream' `
   $Node "`"$(Join-Path $here 'server.js')`""
 Install-Svc 'KMDevStreamCaddy' 'KMDev Stream Caddy (HTTPS)' 'HTTPS-Reverse-Proxy fuer KMDev Stream' `
-  $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile" @{ KMDEV_SIGNAL_PORT = "$port" }
+  $Caddy "run --config `"$(Join-Path $here 'Caddyfile')`" --adapter caddyfile" @{ KMDEV_SIGNAL_PORT = "$port"; KMDEV_HTTPS_PORT = "$caddyPort" }
 
 # ---------- Firewall ----------
 
@@ -282,7 +327,7 @@ function Allow($name, $proto, $ports) {
   }
   Write-Host "   $name ($proto $ports)"
 }
-Allow 'KMDev Stream HTTPS' TCP 443
+Allow "KMDev Stream HTTPS $caddyPort" TCP $caddyPort
 if ($OpenTurnPorts) {
   Allow 'KMDev Stream TURN TCP' TCP 3478
   Allow 'KMDev Stream TURN UDP' UDP 3478
@@ -299,6 +344,26 @@ try {
   Write-Warning 'Signaling-Server antwortet lokal nicht - siehe logs\KMDevStream.err.log'
 }
 
+# Caddy so testen, wie Cloudflare es erreicht: TLS mit SNI = Domain. Das
+# Origin-Zertifikat ist nur fuer Cloudflare gueltig, daher -k.
+$curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+if ($domain -and $curl) {
+  $ErrorActionPreference = 'Continue'
+  $res = & $curl.Source -sk --max-time 5 --resolve "${domain}:${caddyPort}:127.0.0.1" "https://${domain}:${caddyPort}/health" 2>&1
+  $ErrorActionPreference = 'Stop'
+  if ("$res" -match '"ok"\s*:\s*true') { Write-Host "== Caddy (HTTPS $caddyPort) antwortet lokal mit Zertifikat fuer $domain" }
+  else { Write-Warning "Caddy antwortet lokal nicht auf HTTPS $caddyPort - siehe logs\KMDevStreamCaddy.err.log" }
+}
+
+$shown = if ($domain) { $domain } else { '<deine-domain>' }
 Write-Host ''
-Write-Host 'Fertig. Test von aussen: https://<deine-domain>/health'
-Write-Host 'Tipp: Port 443 in der Firewall auf die Cloudflare-IP-Bereiche beschraenken (https://www.cloudflare.com/ips/).'
+if ($caddyPort -ne 443) {
+  Write-Host "WICHTIG - Port 443 ist belegt, Caddy laeuft auf Port $caddyPort."
+  Write-Host 'In Cloudflare dafuer eine Origin Rule anlegen:'
+  Write-Host '  Regeln -> Origin Rules -> Regel erstellen'
+  Write-Host "  Wenn: Hostname ist gleich $shown"
+  Write-Host "  Dann: Zielport -> Umschreiben auf $caddyPort"
+  Write-Host ''
+}
+Write-Host "Fertig. Test von aussen: https://$shown/health"
+Write-Host "Tipp: Port $caddyPort in der Firewall auf die Cloudflare-IP-Bereiche beschraenken (https://www.cloudflare.com/ips/)."

@@ -13,7 +13,7 @@
 	auto_https off
 }
 
-stream.example.com:443 {
+stream.example.com:{$KMDEV_HTTPS_PORT:443} {
 	# Relativ zum Server-Ordner (der Dienst startet mit diesem Arbeitsverzeichnis).
 	tls certs/origin.pem certs/origin.key
 

@@ -122,6 +122,16 @@ Dienste: `KMDevStream` (Node, nur 127.0.0.1:8443) und `KMDevStreamCaddy`
 und werden bei einem Absturz neu gestartet. Logs mit Rotation liegen unter
 `server\logs\` (`*.out.log`, `*.err.log`, `*.wrapper.log`).
 
+**Port 443 schon belegt (z. B. IIS/Plesk)?** Dann erkennt das Skript das und
+lässt Caddy auf einem alternativen HTTPS-Port laufen, den Cloudflare
+unterstützt (2053, 2083, 2087 oder 2096). Das Skript nennt den gewählten Port
+am Ende. Dazu brauchst du in Cloudflare eine **Origin Rule**:
+*Regeln → Origin Rules → Regel erstellen → Hostname ist gleich `<subdomain>`
+→ Zielport umschreiben auf `<Port>`*. Die Clients nutzen weiterhin 443.
+
+Am Ende testet das Skript den Signaling-Server und Caddy lokal (HTTPS mit
+SNI, so wie Cloudflare den Server anspricht).
+
 Das Skript kann jederzeit erneut laufen, zum Beispiel nach einem `git pull`.
 Es richtet die Dienste dann neu ein. Mit `-UpdateCaddy` holt es zusätzlich
 die neueste Caddy-Version.

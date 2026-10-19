@@ -934,7 +934,7 @@ function onRooms(list) {
 
 // Meldet Streams, die seit der letzten Liste neu (oeffentlich) sind. Die erste
 // Liste nach dem Start zaehlt nicht – sonst kaeme jeder laufende Stream.
-function notifyNewRooms(list) {
+async function notifyNewRooms(list) {
   const codes = new Set(list.map((r) => r.code));
   const fresh = knownRooms ? list.filter((r) => !knownRooms.has(r.code) && (!host || r.code !== host.room)) : [];
   knownRooms = codes;
@@ -942,18 +942,18 @@ function notifyNewRooms(list) {
   const r = fresh[0];
   const title = fresh.length > 1 ? `${fresh.length} Freunde sind jetzt live` : `${r.hostName} ist jetzt live`;
   const body = fresh.length > 1 ? fresh.map((x) => x.hostName).join(', ') : (r.title || 'Ohne Titel');
-  if (document.hasFocus()) {
-    // Fenster ist vorne: Hinweis in der App statt Windows-Benachrichtigung.
-    playLiveChime();
-    toast(`${title} – ${body}`, 8000, fresh.length > 1 ? null : { label: 'Ansehen', onClick: () => joinFromList(r.code) });
-    return;
-  }
-  window.api.notify({
+  // Immer als Windows-Benachrichtigung; ist das Fenster vorne, zusaetzlich
+  // ein Hinweis mit „Ansehen“ direkt in der App.
+  const shown = await window.api.notify({
     title,
     body,
     room: fresh.length > 1 ? null : r.code,
     link: fresh.length > 1 ? null : joinLink(settings.serverUrl, r.code)
-  });
+  }).catch(() => false);
+  if (!shown) playLiveChime();
+  if (!shown || document.hasFocus()) {
+    toast(`${title} – ${body}`, 8000, fresh.length > 1 ? null : { label: 'Ansehen', onClick: () => joinFromList(r.code) });
+  }
 }
 
 // Wie ein Klick auf die Karte: Passwort-Streams brauchen erst die Eingabe.

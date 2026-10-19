@@ -264,27 +264,47 @@ const xmlEsc = (s) => String(s ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;',
 // Jemand ist live gegangen. In der installierten App mit Knopf „Beitreten“:
 // Der Knopf oeffnet einen kmdev-stream://join-Link – das klappt auch, wenn die
 // Benachrichtigung erst spaeter im Info-Center angeklickt wird.
+// Offene Benachrichtigungen festhalten – sonst raeumt der Garbage Collector
+// sie weg und der Klick kommt nie an.
+const notes = new Set();
+
+function showNote(opts, n, fallback) {
+  const note = new Notification(opts);
+  notes.add(note);
+  const done = () => notes.delete(note);
+  note.on('click', () => {
+    done();
+    showWindow();
+    sendToWin('notify:open', n.room || null);
+  });
+  note.on('close', done);
+  // Lehnt Windows die Variante mit Knoepfen ab, die einfache zeigen.
+  note.on('failed', (_e, err) => {
+    done();
+    console.warn('Benachrichtigung fehlgeschlagen', err);
+    if (fallback) showNote(fallback, n, null);
+  });
+  note.show();
+}
+
 ipcMain.handle('notify:show', (_e, n) => {
   if (!Notification.isSupported()) return false;
   const title = String(n.title || '').slice(0, 120);
   const body = String(n.body || '').slice(0, 200);
   const link = typeof n.link === 'string' && n.link.startsWith(PROTOCOL + '://') ? n.link : null;
-  const opts = { title, body, icon: ICON };
+  const plain = { title, body, icon: ICON };
   if (link && app.isPackaged && process.platform === 'win32') {
-    opts.toastXml = `<toast launch="${xmlEsc(link)}" activationType="protocol">
+    const toastXml = `<toast launch="${xmlEsc(link)}" activationType="protocol">
       <visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>
       <actions>
         <action content="Beitreten" activationType="protocol" arguments="${xmlEsc(link)}"/>
         <action content="Später" activationType="system" arguments="dismiss"/>
       </actions>
     </toast>`;
+    showNote({ ...plain, toastXml }, n, plain);
+  } else {
+    showNote(plain, n, null);
   }
-  const note = new Notification(opts);
-  note.on('click', () => {
-    showWindow();
-    sendToWin('notify:open', n.room || null);
-  });
-  note.show();
   return true;
 });
 

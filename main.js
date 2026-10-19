@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, shell, Menu, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, Menu, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -62,6 +62,7 @@ const DEFAULT_SETTINGS = {
   joinSound: true, // Ton, wenn beim eigenen Stream jemand beitritt
   endSound: true, // Ton, wenn ein angesehener Stream endet
   notifyLive: true, // Benachrichtigung, wenn jemand oeffentlich live geht
+  lastVersion: '', // zuletzt gestartete Version (fuer „Was ist neu“)
   settingsVersion: 2
 };
 
@@ -116,18 +117,6 @@ function createWindow() {
   // Autostart: nur in der Taskleiste erscheinen, nicht ins Gesicht springen.
   if (startedByAutostart) win.once('ready-to-show', () => win.minimize());
 
-  win.on('close', (e) => {
-    if (!streaming) return;
-    const choice = dialog.showMessageBoxSync(win, {
-      type: 'question',
-      buttons: ['Stream beenden und schließen', 'Abbrechen'],
-      defaultId: 1,
-      cancelId: 1,
-      title: 'Stream läuft',
-      message: 'Es läuft gerade ein Stream. Wirklich beenden?'
-    });
-    if (choice !== 0) e.preventDefault();
-  });
   // Pop-out-Fenster gehoeren zum Hauptfenster.
   win.on('closed', () => {
     for (const w of popouts) if (!w.isDestroyed()) w.close();

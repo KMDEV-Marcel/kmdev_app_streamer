@@ -7,7 +7,8 @@ import { parseInvite, setupInvite, watchUrl, joinLink } from './invite.js';
 import { TileManager } from './tiles.js';
 import { AppAudio } from './appaudio.js';
 import { icon, hydrateIcons } from './icons.js';
-import { Lobby } from './lobby.js';
+import { Lobby, POLL_FAST, POLL_SLOW } from './lobby.js';
+import { changesBetween } from './changelog.js';
 import { playJoinChime, playEndChime, playLiveChime } from './sounds.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -792,6 +793,13 @@ function renderWatch() {
   $('#watchStage').hidden = !stage;
   $('#btnBackToTiles').hidden = n === 0;
   if (stage && currentPage() === 'watch') tiles.arrange();
+  updateLobbySpeed();
+}
+
+// Live-Liste im Blick -> alle 5 s auffrischen, sonst gemaechlich.
+function updateLobbySpeed() {
+  const visible = !document.hidden && currentPage() === 'watch' && !$('#watchHome').hidden;
+  lobby.setPollInterval(visible ? POLL_FAST : POLL_SLOW);
 }
 
 function setHint(text, error = false) {
@@ -1036,6 +1044,25 @@ function popOut(tile) {
 }
 
 /* ---------- Auto-Update ---------- */
+
+// Nach einem Update einmal zeigen, was neu ist. Beim allerersten Start nicht.
+function showWhatsNew(version) {
+  const last = settings.lastVersion;
+  if (last !== version) {
+    settings.lastVersion = version;
+    persist();
+  }
+  if (!last || last === version) return;
+  const changes = changesBetween(last, version);
+  if (!changes.length) return;
+  $('#whatsNewTitle').textContent = `Aktualisiert auf Version ${version}`;
+  $('#whatsNewList').innerHTML = changes.map((c) => `
+    <section>
+      <h3>Neu in ${esc(c.version)}</h3>
+      <ul>${c.items.map((i) => `<li>${icon('check')}<span>${esc(i)}</span></li>`).join('')}</ul>
+    </section>`).join('');
+  $('#whatsNewModal').hidden = false;
+}
 
 function renderUpdateUi() {
   const s = updateState;
@@ -1344,7 +1371,13 @@ function wire() {
     $('#viewerPop').hidden = true;
     $('#btnViewers').classList.remove('open');
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshRooms(); });
+  document.addEventListener('visibilitychange', () => {
+    updateLobbySpeed();
+    if (!document.hidden) refreshRooms();
+  });
+  // Fenster schliessen beendet den eigenen Stream sauber (Zuschauer bekommen
+  // sofort „Stream beendet“ statt auf den Verbindungsabbruch zu warten).
+  window.addEventListener('beforeunload', () => { if (host) stopHosting(); });
 
   window.api.onUpdate((s) => {
     updateState = s;
@@ -1391,6 +1424,7 @@ async function init() {
   renderUpdateUi();
   const info = await window.api.appInfo();
   document.title = `KM-DEV Stream ${info.version}`;
+  showWhatsNew(info.version);
   if (settings.appAudio) applyAppAudio();
   else renderAppList();
   loadSources();

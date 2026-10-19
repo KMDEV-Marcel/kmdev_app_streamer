@@ -593,3 +593,11 @@ body.popout { background: #000; }
   background: var(--surface); color: var(--text); padding: 10px 16px; border-radius: 12px;
   border: 1px solid rgba(235, 255, 245, .08); box-shadow: 0 12px 40px rgba(0, 0, 0, .5); max-width: 80vw;
 }
+
+/* Neuerungen nach einem Update */
+.whatsnew-box { width: min(520px, calc(100% - 32px)); }
+.whatsnew-list { padding: 14px 26px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.whatsnew-list h3 { font: 600 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
+.whatsnew-list ul { list-style: none; display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 0; }
+.whatsnew-list li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.4; }
+.whatsnew-list li .ico { width: 16px; height: 16px; margin-top: 2px; color: var(--accent); }

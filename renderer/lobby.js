@@ -3,14 +3,15 @@
  *
  * Die App abonniert die Liste ('subscribe') und bekommt jede Aenderung sofort
  * vom Server. So kann sie melden, wenn jemand live geht – auch minimiert.
- * Aeltere Server kennen 'subscribe' nicht; dann wird wie frueher alle 15 s
- * per 'list' nachgefragt.
+ * Aeltere Server kennen 'subscribe' nicht; dann wird regelmaessig per 'list'
+ * nachgefragt – alle 5 s, solange die Liste zu sehen ist, sonst alle 15 s.
  *
  * Ereignisse: 'rooms' (detail: Liste), 'error' (detail: Error), 'state'
  */
 import { Signaling } from './rtc.js';
 
-const POLL_MS = 15000;
+export const POLL_SLOW = 15000;
+export const POLL_FAST = 5000;
 
 export class Lobby extends EventTarget {
   constructor() {
@@ -23,6 +24,23 @@ export class Lobby extends EventTarget {
     this.retry = 0;
     this.retryTimer = null;
     this.pollTimer = null;
+    this.pollMs = POLL_SLOW;
+  }
+
+  // Abfrage-Takt aendern; beim Beschleunigen sofort einmal nachfragen.
+  setPollInterval(ms) {
+    if (ms === this.pollMs) return;
+    const faster = ms < this.pollMs;
+    this.pollMs = ms;
+    if (!this.connected) return;
+    this.startPolling();
+    if (faster) this.sig.send({ type: 'list', key: this.key });
+  }
+
+  startPolling() {
+    clearInterval(this.pollTimer);
+    const sig = this.sig;
+    this.pollTimer = setInterval(() => sig.send({ type: 'list', key: this.key }), this.pollMs);
   }
 
   // Neu verbinden, wenn sich Server oder Schluessel geaendert haben.
@@ -83,7 +101,7 @@ export class Lobby extends EventTarget {
     sig.send({ type: 'subscribe', key: this.key });
     // Rueckfall fuer Server ohne Abo: regelmaessig nachfragen. Mit Abo kostet
     // das nur eine kleine Nachricht und faengt verpasste Aenderungen ab.
-    this.pollTimer = setInterval(() => sig.send({ type: 'list', key: this.key }), POLL_MS);
+    this.startPolling();
   }
 
   // Wiederverbinden mit wachsender Pause (2 s … 60 s).

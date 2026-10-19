@@ -2,6 +2,7 @@
 // Zuschauer-Verbindung, unabhaengig vom Hauptfenster.
 import { Tile } from './tiles.js';
 import { hydrateIcons } from './icons.js';
+import { playEndChime } from './sounds.js';
 
 const $ = (sel) => document.querySelector(sel);
 hydrateIcons();
@@ -16,6 +17,7 @@ tile.setVolume(data.volume ?? 1);
 tile.setMuted(!!data.muted);
 
 tile.addEventListener('ended', (e) => {
+  if (data.endSound !== false) playEndChime();
   tile.overlay(e.detail.message);
   if (tile.session) tile.session.stop();
 });

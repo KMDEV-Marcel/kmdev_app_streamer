@@ -274,7 +274,7 @@
       <button class="esc-hint" data-close>Esc<i data-icon="close"></i></button>
     </div>
     <nav class="settings-tabs" id="settingsTabs">
-      <button data-tab="account" class="active">Konto</button>
+      <button data-tab="account" class="active">Allgemein</button>
       <button data-tab="send">Senden</button>
       <button data-tab="watch">Zuschauen</button>
       <button data-tab="audio">Ton</button>
@@ -286,6 +286,14 @@
         <div class="srow">
           <div class="sl"><span class="t">Anzeigename</span><span class="d">So sehen dich andere in Listen und als Zuschauer.</span></div>
           <input type="text" id="inpName" maxlength="40" class="sinput">
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Benachrichtigen, wenn jemand live geht</span><span class="d">Windows-Hinweis mit „Beitreten“, sobald ein Freund öffentlich streamt.</span></div>
+          <label class="switch"><input type="checkbox" id="chkNotifyLive"><span></span></label>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Mit Windows starten</span><span class="d" id="autostartHint"></span></div>
+          <label class="switch"><input type="checkbox" id="chkAutostart"><span></span></label>
         </div>
       </div>
 
@@ -338,6 +346,10 @@
         <div class="srow">
           <div class="sl"><span class="t">Ton bei neuem Zuschauer</span><span class="d">Kurzer Hinweiston, wenn jemand deinem Stream beitritt.</span></div>
           <label class="switch"><input type="checkbox" id="chkJoinSound"><span></span></label>
+        </div>
+        <div class="srow">
+          <div class="sl"><span class="t">Ton, wenn ein Stream endet</span><span class="d">Hinweiston, wenn der Streamer einen Stream beendet, den du gerade ansiehst.</span></div>
+          <label class="switch"><input type="checkbox" id="chkEndSound"><span></span></label>
         </div>
         <div class="srow">
           <div class="sl"><span class="t">Audio-Bitrate</span><span class="d">Opus, Stereo, in Kbps.</span></div>

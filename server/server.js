@@ -12,7 +12,9 @@
  *  4. Zuschauen im Browser (/watch).
  *
  * Wer streamen oder die Stream-Liste sehen will, braucht den Zugangsschluessel
- * (accessKey). Zum Zuschauen reicht der Stream-Code.
+ * (accessKey). Zum Zuschauen reicht der Stream-Code. Die App haelt dazu eine
+ * Lobby-Verbindung ('subscribe') offen und bekommt jede Aenderung der Liste
+ * sofort zugeschickt (fuer Benachrichtigungen, wenn jemand live geht).
  *
  * TLS terminiert der vorgeschaltete Reverse-Proxy (Caddy); dieser Prozess
  * lauscht standardmaessig nur auf 127.0.0.1.
@@ -156,6 +158,17 @@ function cleanName(n) {
   return String(n || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 40) || 'Gast';
 }
 
+// Vorschaubild vom Host: kleines JPEG als data:-URL.
+const MAX_THUMB = 48 * 1024;
+function cleanThumb(t) {
+  t = String(t || '');
+  return t.length <= MAX_THUMB && /^data:image\/(jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(t) ? t : null;
+}
+
+function viewerNames(room) {
+  return [...room.viewers.values()].map((v) => v.name);
+}
+
 function publicRoomList() {
   const out = [];
   for (const [code, r] of rooms) {
@@ -165,12 +178,37 @@ function publicRoomList() {
       title: r.title,
       hostName: r.hostName,
       viewers: r.viewers.size,
+      viewerNames: viewerNames(r).slice(0, 12),
       viewerLimit: r.viewerLimit,
       hasPassword: !!r.passwordHash,
+      // Ohne Passwort darf jeder mit Schluessel das Vorschaubild sehen.
+      thumb: r.passwordHash ? null : r.thumb,
       since: r.createdAt
     });
   }
   return out.sort((a, b) => b.since - a.since);
+}
+
+// Lobby: alle abonnierten Apps bekommen die Liste nach jeder Aenderung
+// (gebuendelt, damit z. B. mehrere Beitritte nur eine Nachricht ausloesen).
+let lobbyTimer = null;
+function roomsChanged() {
+  if (lobbyTimer) return;
+  lobbyTimer = setTimeout(() => {
+    lobbyTimer = null;
+    let msg = null;
+    for (const [ws, c] of clients) {
+      if (!c.lobby) continue;
+      msg = msg || JSON.stringify({ type: 'rooms', rooms: publicRoomList() });
+      if (ws.readyState === ws.OPEN) ws.send(msg);
+    }
+  }, 250);
+}
+
+// Zuschauer sehen, wer noch zuschaut.
+function sendAudience(room) {
+  const msg = { type: 'audience', hostName: room.hostName, names: viewerNames(room) };
+  for (const v of room.viewers.values()) send(v.ws, msg);
 }
 
 /* ---------- Senden ---------- */
@@ -211,6 +249,7 @@ function handleHost(ws, c, msg) {
     viewerLimit: clampLimit(msg.viewerLimit),
     viewers: new Map(), // peerId -> { ws, name }
     mode: serverMode ? 'server' : 'p2p',
+    thumb: cleanThumb(msg.thumb),
     createdAt: Date.now()
   };
   rooms.set(code, room);
@@ -222,6 +261,7 @@ function handleHost(ws, c, msg) {
     type: 'hosted', room: code, peerId: c.id, mode: room.mode,
     iceServers: iceServersFor(c.id), viewerLimit: room.viewerLimit
   });
+  roomsChanged();
 }
 
 function handleHostUpdate(ws, c, msg) {
@@ -231,7 +271,12 @@ function handleHostUpdate(ws, c, msg) {
   if ('privacy' in msg && ['public', 'contacts', 'private'].includes(msg.privacy)) room.privacy = msg.privacy;
   if ('password' in msg) room.passwordHash = msg.password ? hashPassword(msg.password) : null;
   if ('viewerLimit' in msg) room.viewerLimit = clampLimit(msg.viewerLimit);
-  send(ws, { type: 'host-updated', viewerLimit: room.viewerLimit });
+  if ('thumb' in msg) room.thumb = cleanThumb(msg.thumb);
+  // Reines Vorschaubild-Update braucht keine Bestaetigung.
+  if (Object.keys(msg).some((k) => k !== 'type' && k !== 'thumb')) {
+    send(ws, { type: 'host-updated', viewerLimit: room.viewerLimit });
+  }
+  roomsChanged();
 }
 
 function handleJoin(ws, c, msg) {
@@ -262,6 +307,8 @@ function handleJoin(ws, c, msg) {
   });
   send(room.hostWs, { type: 'viewer-joined', peerId: c.id, name: c.name, viewers: room.viewers.size });
   if (room.mode === 'server') toMedia({ type: 'viewer-join', room: code, peer: c.id });
+  sendAudience(room);
+  roomsChanged();
 }
 
 function handleSignal(ws, c, msg) {
@@ -312,7 +359,9 @@ function leave(ws) {
     room.viewers.delete(c.id);
     send(room.hostWs, { type: 'viewer-left', peerId: c.id, viewers: room.viewers.size });
     if (room.mode === 'server') toMedia({ type: 'peer-leave', room: code, peer: c.id });
+    sendAudience(room);
   }
+  roomsChanged();
 }
 
 /* ---------- Medien-Server (SFU) ---------- */
@@ -377,6 +426,12 @@ const handlers = {
     if (!keyMatches(msg.key)) return sendError(ws, 'bad_key', 'Zugangsschlüssel fehlt oder ist falsch.');
     send(ws, { type: 'rooms', rooms: publicRoomList() });
   },
+  // Lobby abonnieren: Liste jetzt und nach jeder Aenderung.
+  subscribe: (ws, c, msg) => {
+    if (!keyMatches(msg.key)) return sendError(ws, 'bad_key', 'Zugangsschlüssel fehlt oder ist falsch.');
+    c.lobby = true;
+    send(ws, { type: 'rooms', rooms: publicRoomList() });
+  },
   // Was kann dieser Server? (fuer die App-Einstellungen)
   info: (ws, c, msg) => send(ws, { type: 'info', keyOk: keyMatches(msg.key), sfu: !!mediaWs }),
   ping: (ws) => send(ws, { type: 'pong' })
@@ -405,7 +460,8 @@ const WEB_FILES = {
   '/watch/watch.js': ['web/watch.js', 'text/javascript; charset=utf-8'],
   '/watch/watch.css': ['web/watch.css', 'text/css; charset=utf-8'],
   '/watch/rtc.js': ['../renderer/rtc.js', 'text/javascript; charset=utf-8'],
-  '/watch/invite.js': ['../renderer/invite.js', 'text/javascript; charset=utf-8']
+  '/watch/invite.js': ['../renderer/invite.js', 'text/javascript; charset=utf-8'],
+  '/watch/sounds.js': ['../renderer/sounds.js', 'text/javascript; charset=utf-8']
 };
 
 function serveWeb(pathname, res) {
@@ -454,7 +510,7 @@ wss.on('connection', (ws, req) => {
   // vertrauen ist ok, weil dieser Prozess nur auf 127.0.0.1 lauscht.
   const cf = String(req.headers['cf-connecting-ip'] || '').trim();
   const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  const c = { id: newId(), ip: cf || fwd || req.socket.remoteAddress, room: null, role: null, name: '', alive: true, bucket: 0 };
+  const c = { id: newId(), ip: cf || fwd || req.socket.remoteAddress, room: null, role: null, name: '', lobby: false, alive: true, bucket: 0 };
   clients.set(ws, c);
   send(ws, { type: 'welcome', peerId: c.id, serverTime: Date.now() });
 

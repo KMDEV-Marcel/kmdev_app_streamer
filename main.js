@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, shell, Menu, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -8,6 +8,10 @@ const audio = require('./audio');
 const ICON = path.join(__dirname, 'build', 'icon.ico');
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 const PROTOCOL = 'kmdev-stream';
+const APP_ID = 'de.km-dev.stream';
+// Beim Windows-Start (Autostart) minimiert starten.
+const AUTOSTART_ARG = '--autostart';
+const startedByAutostart = process.argv.includes(AUTOSTART_ARG);
 
 let win = null;
 let streaming = false;
@@ -56,6 +60,8 @@ const DEFAULT_SETTINGS = {
   connectionMode: 'p2p',
   title: '',
   joinSound: true, // Ton, wenn beim eigenen Stream jemand beitritt
+  endSound: true, // Ton, wenn ein angesehener Stream endet
+  notifyLive: true, // Benachrichtigung, wenn jemand oeffentlich live geht
   settingsVersion: 2
 };
 
@@ -91,6 +97,7 @@ function createWindow() {
     autoHideMenuBar: true,
     icon: ICON,
     title: `KM-DEV Stream ${app.getVersion()}`,
+    show: !startedByAutostart,
     // Eigene Kopfleiste als Titelleiste; Windows zeichnet nur die Fensterknoepfe darueber.
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0d1110', symbolColor: '#9aa6a1', height: 60 },
@@ -106,6 +113,8 @@ function createWindow() {
   });
   Menu.setApplicationMenu(null);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Autostart: nur in der Taskleiste erscheinen, nicht ins Gesicht springen.
+  if (startedByAutostart) win.once('ready-to-show', () => win.minimize());
 
   win.on('close', (e) => {
     if (!streaming) return;
@@ -241,6 +250,58 @@ ipcMain.handle('shell:open', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
 
+function showWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
+}
+
+/* ---------- Benachrichtigungen ---------- */
+
+const xmlEsc = (s) => String(s ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+
+// Jemand ist live gegangen. In der installierten App mit Knopf „Beitreten“:
+// Der Knopf oeffnet einen kmdev-stream://join-Link – das klappt auch, wenn die
+// Benachrichtigung erst spaeter im Info-Center angeklickt wird.
+ipcMain.handle('notify:show', (_e, n) => {
+  if (!Notification.isSupported()) return false;
+  const title = String(n.title || '').slice(0, 120);
+  const body = String(n.body || '').slice(0, 200);
+  const link = typeof n.link === 'string' && n.link.startsWith(PROTOCOL + '://') ? n.link : null;
+  const opts = { title, body, icon: ICON };
+  if (link && app.isPackaged && process.platform === 'win32') {
+    opts.toastXml = `<toast launch="${xmlEsc(link)}" activationType="protocol">
+      <visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>
+      <actions>
+        <action content="Beitreten" activationType="protocol" arguments="${xmlEsc(link)}"/>
+        <action content="Später" activationType="system" arguments="dismiss"/>
+      </actions>
+    </toast>`;
+  }
+  const note = new Notification(opts);
+  note.on('click', () => {
+    showWindow();
+    sendToWin('notify:open', n.room || null);
+  });
+  note.show();
+  return true;
+});
+
+/* ---------- Autostart ---------- */
+
+// Nur fuer die installierte App: Ein Entwicklungsstart wuerde sonst die
+// nackte electron.exe beim Anmelden starten.
+function autostartState() {
+  if (!app.isPackaged) return { available: false, enabled: false };
+  return { available: true, enabled: app.getLoginItemSettings({ args: [AUTOSTART_ARG] }).openAtLogin };
+}
+ipcMain.handle('autostart:get', () => autostartState());
+ipcMain.handle('autostart:set', (_e, on) => {
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!on, args: [AUTOSTART_ARG] });
+  return autostartState();
+});
+
 /* ---------- Anwendungsaudio ---------- */
 
 function sendToWin(channel, data) {
@@ -274,7 +335,9 @@ ipcMain.handle('popout:open', (_e, data) => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      // Ende-Ton ohne vorherigen Klick ins Fenster
+      autoplayPolicy: 'no-user-gesture-required'
     }
   });
   popouts.add(w);
@@ -322,10 +385,12 @@ if (!app.requestSingleInstanceLock()) {
   if (app.isPackaged) app.setAsDefaultProtocolClient(PROTOCOL);
   pendingInvite = findInvite(process.argv);
 
+  // Windows ordnet Benachrichtigungen ueber diese Kennung der App zu.
+  app.setAppUserModelId(app.isPackaged ? APP_ID : process.execPath);
+
   app.on('second-instance', (_e, argv) => {
     if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    showWindow();
     deliverInvite(findInvite(argv));
   });
 

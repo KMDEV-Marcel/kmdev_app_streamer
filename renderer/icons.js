@@ -31,7 +31,9 @@ const P = {
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
   push_pin: '<path d="M12 17v5"/><path d="M9 10.76V4h6v6.76a2 2 0 0 0 .55 1.38L18 15H6l2.45-2.86A2 2 0 0 0 9 10.76z"/><path d="M8 4h8"/>',
-  check: '<path d="M20 6 9 17l-5-5"/>'
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  visibility: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  play_arrow: '<path d="M7 4v16l13-8z"/>'
 };
 
 export function icon(name, cls = '') {

@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('api', {
   onAudioStatus: (cb) => ipcRenderer.on('audio:status', (_e, s) => cb(s)),
   onAudioApps: (cb) => ipcRenderer.on('audio:apps', (_e, apps) => cb(apps)),
 
+  // Windows-Benachrichtigung, wenn jemand live geht; Klick -> onNotifyOpen(room)
+  notify: (n) => ipcRenderer.invoke('notify:show', n),
+  onNotifyOpen: (cb) => ipcRenderer.on('notify:open', (_e, room) => cb(room)),
+  getAutostart: () => ipcRenderer.invoke('autostart:get'),
+  setAutostart: (on) => ipcRenderer.invoke('autostart:set', on),
+
   openPopout: (data) => ipcRenderer.invoke('popout:open', data),
   pinPopout: (on) => ipcRenderer.invoke('popout:pin', on),
 

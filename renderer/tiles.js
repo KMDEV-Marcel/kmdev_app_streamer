@@ -14,6 +14,20 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 let nextId = 1;
 
+function colorFor(text) {
+  let h = 0;
+  for (const ch of String(text)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${h}, 60%, 66%)`;
+}
+
+function face(name) {
+  const el = document.createElement('span');
+  el.className = 'face';
+  el.style.background = colorFor(name);
+  el.textContent = String(name || '?').slice(0, 1).toUpperCase();
+  return el;
+}
+
 export class Tile extends EventTarget {
   constructor({ serverUrl, room, password, name }) {
     super();
@@ -27,6 +41,7 @@ export class Tile extends EventTarget {
     this.mode = 'p2p';
     this.volume = 1;
     this.muted = false;
+    this.audience = [];
     this.sig = null;
     this.session = null;
     this.rect = null; // freie Anordnung: { x, y, w, h } in Prozent
@@ -42,7 +57,10 @@ export class Tile extends EventTarget {
       <div class="tile-overlay">Verbinde…</div>
       <span class="tile-stats"></span>
       <div class="tile-name"><span class="dot"></span><span class="tile-host"></span><span class="tile-title">${esc(this.room)}</span></div>
-      <span class="tile-muted">${icon('volume_off')}stumm</span>
+      <div class="tile-badges">
+        <span class="tile-muted">${icon('volume_off')}stumm</span>
+        <span class="tile-audience" hidden></span>
+      </div>
       <div class="tile-ctrl">
         <span class="vol">
           <button class="tile-mute" title="Stumm">${icon('volume_up')}</button>
@@ -131,9 +149,40 @@ export class Tile extends EventTarget {
         this.mode === 'server' ? 'Server' : null
       ].filter(Boolean).join(' · ');
     });
+    sig.on('audience', (m) => this.renderAudience(m.names || []));
     sig.on('host-left', () => this.end('Der Stream wurde beendet.'));
     sig.on('kicked', () => this.end('Du wurdest vom Host entfernt.'));
     sig.on('disconnected', () => { if (this.session) this.overlay('Verbindung zum Server verloren.'); });
+  }
+
+  // Wer schaut noch zu? Chip mit Gesichtern, beim Ueberfahren die Namensliste.
+  // Per DOM statt innerHTML mit style-Attributen: Das Pop-out-Fenster
+  // verbietet Inline-Styles per CSP.
+  renderAudience(names) {
+    this.audience = names;
+    const box = this.el.querySelector('.tile-audience');
+    if (!box) return;
+    box.hidden = names.length === 0;
+    box.replaceChildren();
+    box.title = `Es schauen zu: ${names.join(', ')}`;
+    const faces = document.createElement('span');
+    faces.className = 'faces';
+    for (const n of names.slice(0, 3)) faces.append(face(n));
+    const count = document.createElement('span');
+    count.textContent = `${names.length} ${names.length === 1 ? 'schaut' : 'schauen'} zu`;
+    const list = document.createElement('div');
+    list.className = 'aud-list';
+    const head = document.createElement('b');
+    head.textContent = 'Es schauen zu';
+    list.append(head);
+    for (const n of names) {
+      const row = document.createElement('div');
+      const label = document.createElement('span');
+      label.textContent = n === this.name ? `${n} (du)` : n;
+      row.append(face(n), label);
+      list.append(row);
+    }
+    box.append(faces, count, list);
   }
 
   end(message) {

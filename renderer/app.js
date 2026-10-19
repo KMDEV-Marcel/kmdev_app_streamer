@@ -3,10 +3,12 @@ import {
   BITRATE_MIN, BITRATE_MAX, BITRATE_STEP, matchPreset, videoConstraints
 } from './presets.js';
 import { Signaling, HostSession, SFU_ID } from './rtc.js';
-import { parseInvite, setupInvite, watchUrl } from './invite.js';
+import { parseInvite, setupInvite, watchUrl, joinLink } from './invite.js';
 import { TileManager } from './tiles.js';
 import { AppAudio } from './appaudio.js';
 import { icon, hydrateIcons } from './icons.js';
+import { Lobby } from './lobby.js';
+import { playJoinChime, playEndChime, playLiveChime } from './sounds.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -25,6 +27,8 @@ let tiles = null;           // TileManager (Zuschauen)
 let updateState = { state: 'idle' };
 let browsing = false;       // Zuschauen: Startseite trotz offener Streams zeigen
 let rooms = [];             // zuletzt geladene Stream-Liste
+let knownRooms = null;      // Codes der bekannten Streams (fuer Benachrichtigungen)
+const lobby = new Lobby();
 let joinCode = '';
 let joinPwNeeded = false;
 const appAudio = new AppAudio();
@@ -36,9 +40,17 @@ preview.playsInline = true;
 
 /* ---------- Hilfen ---------- */
 
-function toast(text, ms = 2500) {
+// action: { label, onClick } – optionaler Knopf im Hinweis.
+function toast(text, ms = 2500, action = null) {
   const t = $('#toast');
   t.textContent = text;
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-btn';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { t.hidden = true; action.onClick(); });
+    t.append(b);
+  }
   t.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { t.hidden = true; }, ms);
@@ -233,6 +245,19 @@ function initPanel() {
     persist();
     if (e.target.checked) playJoinChime();
   });
+  $('#chkEndSound').addEventListener('change', (e) => {
+    settings.endSound = e.target.checked;
+    persist();
+    if (e.target.checked) playEndChime();
+  });
+  $('#chkNotifyLive').addEventListener('change', (e) => {
+    settings.notifyLive = e.target.checked;
+    persist();
+  });
+  $('#chkAutostart').addEventListener('change', async (e) => {
+    const st = await window.api.setAutostart(e.target.checked);
+    e.target.checked = st.enabled;
+  });
 
   $('#audioMaster').addEventListener('input', (e) => {
     settings.audioMaster = Number(e.target.value);
@@ -293,6 +318,8 @@ function renderPanel() {
   $('#chkAppAudio').checked = !!settings.appAudio;
   $('#chkAppAudioS').checked = !!settings.appAudio;
   $('#chkJoinSound').checked = settings.joinSound !== false;
+  $('#chkEndSound').checked = settings.endSound !== false;
+  $('#chkNotifyLive').checked = settings.notifyLive !== false;
   $('#inpBitrate').value = settings.bitrate;
   $('#inpLimit').value = settings.viewerLimit;
   if (document.activeElement !== $('#inpTitle')) $('#inpTitle').value = settings.title || '';
@@ -326,6 +353,7 @@ async function onSettingsChanged({ constraints = false, represet = false, room =
         privacy: settings.privacy,
         viewerLimit: settings.viewerLimit
       });
+      pushThumb();
     }
   }
 }
@@ -649,6 +677,8 @@ async function startHosting() {
 
     $('#roomCode').textContent = res.room;
     $('#sendStatus').textContent = '';
+    host.thumbTimer = setInterval(pushThumb, THUMB_MS);
+    setTimeout(pushThumb, 1500); // erstes Bild, sobald die Aufnahme laeuft
     window.api.setStreaming(true);
     renderSendView();
     renderViewers();
@@ -667,6 +697,7 @@ async function startHosting() {
 
 function stopHosting() {
   if (!host) return;
+  clearInterval(host.thumbTimer);
   host.session.stop();
   host.sig.close();
   host = null;
@@ -680,27 +711,44 @@ function stopHosting() {
   setTimeout(refreshRooms, 500);
 }
 
-// Kurzer Zwei-Ton-Gong, wenn jemand dem eigenen Stream beitritt.
-let chimeCtx = null;
-function playJoinChime() {
-  try {
-    chimeCtx = chimeCtx || new AudioContext();
-    const t0 = chimeCtx.currentTime + 0.02;
-    [[784, 0], [1175, 0.12]].forEach(([freq, delay]) => {
-      const osc = chimeCtx.createOscillator();
-      const gain = chimeCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0, t0 + delay);
-      gain.gain.linearRampToValueAtTime(0.18, t0 + delay + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + delay + 0.45);
-      osc.connect(gain).connect(chimeCtx.destination);
-      osc.start(t0 + delay);
-      osc.stop(t0 + delay + 0.5);
-    });
-  } catch (e) {
-    console.warn('chime', e);
+/* ---------- Vorschaubild fuer die Stream-Liste ---------- */
+
+const THUMB_MS = 30000;
+const thumbCanvas = document.createElement('canvas');
+thumbCanvas.width = 384;
+thumbCanvas.height = 216;
+
+// Nur oeffentliche Streams ohne Passwort zeigen ein Vorschaubild – bei allen
+// anderen verlaesst kein Bild den Rechner.
+async function pushThumb() {
+  if (!host || !captureStream) return;
+  if (settings.privacy !== 'public' || $('#inpPassword').value) {
+    if (host.thumbSent) host.sig.send({ type: 'host-update', thumb: null });
+    host.thumbSent = false;
+    return;
   }
+  const track = captureStream.getVideoTracks()[0];
+  if (!track || track.readyState !== 'live') return;
+  let frame = null;
+  try {
+    frame = await new ImageCapture(track).grabFrame();
+  } catch {
+    frame = preview.videoWidth ? preview : null; // Rueckfall: laufende Vorschau
+  }
+  if (!frame || !host) return;
+  const fw = frame.width || frame.videoWidth;
+  const fh = frame.height || frame.videoHeight;
+  const ctx = thumbCanvas.getContext('2d');
+  const { width: W, height: H } = thumbCanvas;
+  ctx.fillStyle = '#090c0b';
+  ctx.fillRect(0, 0, W, H);
+  const k = Math.min(W / fw, H / fh);
+  ctx.drawImage(frame, (W - fw * k) / 2, (H - fh * k) / 2, fw * k, fh * k);
+  if (frame.close) frame.close();
+  let data = thumbCanvas.toDataURL('image/jpeg', 0.72);
+  if (data.length > 46000) data = thumbCanvas.toDataURL('image/jpeg', 0.5);
+  host.sig.send({ type: 'host-update', thumb: data });
+  host.thumbSent = true;
 }
 
 let knownViewers = new Set();
@@ -809,46 +857,124 @@ function joinNow() {
   openStream(joinCode, $('#inpJoinPassword').value);
 }
 
-let roomsTimer = null;
-async function refreshRooms() {
-  clearTimeout(roomsTimer);
-  // Liste regelmaessig auffrischen, solange das Fenster sichtbar ist.
-  roomsTimer = setTimeout(refreshRooms, 15000);
+function refreshRooms() {
+  if (!settings.serverUrl) {
+    lobby.configure('', '');
+    renderRooms();
+    return;
+  }
+  if (!lobby.configure(settings.serverUrl, settings.accessKey)) lobby.refresh();
+}
+
+function sinceText(ts) {
+  const min = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  if (min < 1) return 'gerade eben';
+  if (min < 60) return `${min} Min`;
+  return `${Math.floor(min / 60)} Std ${min % 60} Min`;
+}
+
+function faces(names, max = 3) {
+  const shown = names.slice(0, max).map((n) => `<span class="face" style="background:${colorFor(n)}">${initial(n)}</span>`).join('');
+  const more = names.length > max ? `<span class="face more">+${names.length - max}</span>` : '';
+  return shown + more;
+}
+
+function roomCard(r) {
+  const title = r.title || 'Ohne Titel';
+  const names = r.viewerNames || [];
+  const thumb = typeof r.thumb === 'string' && r.thumb.startsWith('data:image/') ? r.thumb : null;
+  const watchers = names.length ? `Es schauen: ${names.join(', ')}` : 'Noch niemand schaut zu';
+  return `
+    <button class="room-card" data-code="${esc(r.code)}" title="${esc(title)} · Code ${esc(r.code)}">
+      <div class="rc-thumb">
+        ${thumb
+          ? `<img src="${esc(thumb)}" alt="">`
+          : `<div class="rc-ph">${r.hasPassword ? icon('lock') : `<span class="rc-ph-av" style="background:${colorFor(r.hostName)}">${initial(r.hostName)}</span>`}</div>`}
+        <span class="rc-badges"><span class="rc-live">LIVE</span><span class="rc-open">GEÖFFNET</span></span>
+        <span class="rc-time" data-since="${Number(r.since) || 0}">${esc(sinceText(r.since))}</span>
+        <span class="rc-viewers" title="${esc(watchers)}">${icon('visibility')}${r.viewers}</span>
+        <span class="rc-play">${icon(r.hasPassword ? 'lock' : 'play_arrow')}${r.hasPassword ? 'Passwort eingeben' : 'Ansehen'}</span>
+      </div>
+      <div class="rc-info">
+        <span class="rc-av" style="background:${colorFor(r.hostName)}">${initial(r.hostName)}</span>
+        <span class="rc-text"><span class="rc-title">${esc(title)}</span><span class="rc-name">${esc(r.hostName)}${r.hasPassword ? ' · mit Passwort' : ''}</span></span>
+        ${names.length ? `<span class="rc-faces" title="${esc(watchers)}">${faces(names)}</span>` : ''}
+      </div>
+    </button>`;
+}
+
+function renderRooms(error = null) {
   const box = $('#roomList');
   if (!settings.serverUrl) {
     box.innerHTML = '<div class="room-empty">Kein Server eingerichtet – öffne die Einstellungen und füge eine Einladung ein.</div>';
+  } else if (error) {
+    box.innerHTML = `<div class="room-empty error">${esc(error.message)}</div>`;
+  } else {
+    // Der eigene Stream gehoert nicht in „bei Freunden“.
+    const list = rooms.filter((r) => !host || r.code !== host.room);
+    box.innerHTML = list.length
+      ? list.map(roomCard).join('')
+      : '<div class="room-empty">Gerade ist niemand öffentlich live.</div>';
+  }
+  renderNav();
+}
+
+// Laufzeit auf den Karten jede Minute nachziehen.
+setInterval(() => {
+  for (const el of $$('#roomList .rc-time')) el.textContent = sinceText(Number(el.dataset.since));
+}, 60000);
+
+function onRooms(list) {
+  rooms = list;
+  renderRooms();
+  renderUser('ok', 'verbunden');
+  renderJoinCard();
+  notifyNewRooms(list);
+}
+
+// Meldet Streams, die seit der letzten Liste neu (oeffentlich) sind. Die erste
+// Liste nach dem Start zaehlt nicht – sonst kaeme jeder laufende Stream.
+function notifyNewRooms(list) {
+  const codes = new Set(list.map((r) => r.code));
+  const fresh = knownRooms ? list.filter((r) => !knownRooms.has(r.code) && (!host || r.code !== host.room)) : [];
+  knownRooms = codes;
+  if (!fresh.length || settings.notifyLive === false) return;
+  const r = fresh[0];
+  const title = fresh.length > 1 ? `${fresh.length} Freunde sind jetzt live` : `${r.hostName} ist jetzt live`;
+  const body = fresh.length > 1 ? fresh.map((x) => x.hostName).join(', ') : (r.title || 'Ohne Titel');
+  if (document.hasFocus()) {
+    // Fenster ist vorne: Hinweis in der App statt Windows-Benachrichtigung.
+    playLiveChime();
+    toast(`${title} – ${body}`, 8000, fresh.length > 1 ? null : { label: 'Ansehen', onClick: () => joinFromList(r.code) });
     return;
   }
-  if (document.hidden) return;
-  const sig = new Signaling(settings.serverUrl);
-  try {
-    await sig.connect();
-    const res = await sig.request({ type: 'list', key: settings.accessKey }, 'rooms');
-    rooms = res.rooms;
-    box.innerHTML = rooms.length
-      ? rooms.map((r) => `
-        <button class="room-card" data-code="${esc(r.code)}" data-pw="${r.hasPassword ? 1 : 0}" title="${esc(r.title || 'Ohne Titel')} · Code ${esc(r.code)}">
-          <div class="rc-thumb">
-            <span class="rc-live">LIVE</span>
-            <span class="rc-open">GEÖFFNET</span>
-            <span class="rc-viewers">${r.viewers} ${r.viewers === 1 ? 'schaut' : 'schauen'}</span>
-          </div>
-          <div class="rc-info">
-            <span class="rc-av" style="background:${colorFor(r.hostName)}">${initial(r.hostName)}</span>
-            <span class="rc-text"><span class="rc-title">${esc(r.title || 'Ohne Titel')}</span><span class="rc-name">${esc(r.hostName)}</span></span>
-            ${r.hasPassword ? `<span class="rc-lock">${icon('lock')}</span>` : ''}
-          </div>
-        </button>`).join('')
-      : '<div class="room-empty">Gerade ist niemand öffentlich live.</div>';
-    renderUser('ok', 'verbunden');
-    renderJoinCard();
-  } catch (e) {
-    box.innerHTML = `<div class="room-empty error">${esc(e.message)}</div>`;
-    renderUser('bad', e.code === 'bad_key' ? 'Schlüssel fehlt' : 'nicht erreichbar');
-  } finally {
-    sig.close();
-    renderNav();
+  window.api.notify({
+    title,
+    body,
+    room: fresh.length > 1 ? null : r.code,
+    link: fresh.length > 1 ? null : joinLink(settings.serverUrl, r.code)
+  });
+}
+
+// Wie ein Klick auf die Karte: Passwort-Streams brauchen erst die Eingabe.
+function joinFromList(code) {
+  const r = rooms.find((x) => x.code === code);
+  showPage('watch');
+  if (tiles.has(code)) {
+    browsing = false;
+    renderWatch();
+    return;
   }
+  if (r && r.hasPassword) {
+    browsing = true;
+    renderWatch();
+    setJoinCode(code);
+    joinPwNeeded = true;
+    renderJoinCard();
+    $('#inpJoinPassword').focus();
+    return;
+  }
+  openStream(code);
 }
 
 async function openStream(room, password = '', serverUrl = settings.serverUrl) {
@@ -887,6 +1013,7 @@ function popOut(tile) {
     room: tile.room,
     password: tile.password,
     name: displayName(),
+    endSound: settings.endSound !== false,
     title: `${tile.title} – ${tile.hostName}`,
     volume: tile.volume,
     muted: tile.muted
@@ -935,6 +1062,13 @@ async function openAppSettings(tab = 'account') {
   $('#inpAccessKey').value = settings.accessKey || '';
   $('#inpInvite').value = '';
   $('#btnCopyInvite').disabled = !settings.serverUrl;
+  window.api.getAutostart().then((st) => {
+    $('#chkAutostart').checked = st.enabled;
+    $('#chkAutostart').disabled = !st.available;
+    $('#autostartHint').textContent = st.available
+      ? 'Startet minimiert im Hintergrund, damit du Benachrichtigungen bekommst.'
+      : 'Nur in der installierten App verfügbar.';
+  });
   selectTab($('#settingsTabs'), $$('#appSettingsModal .spane'), tab);
   renderPanel();
   renderUpdateUi();
@@ -1116,21 +1250,22 @@ function wire() {
   $('#btnRefreshRooms').addEventListener('click', refreshRooms);
   $('#roomList').addEventListener('click', (e) => {
     const item = e.target.closest('.room-card');
-    if (!item) return;
-    if (tiles.has(item.dataset.code)) {
-      browsing = false;
-      renderWatch();
-      return;
-    }
-    if (item.dataset.pw === '1') {
-      setJoinCode(item.dataset.code);
-      joinPwNeeded = true;
-      renderJoinCard();
-      $('#inpJoinPassword').focus();
-      return;
-    }
-    openStream(item.dataset.code);
+    if (item) joinFromList(item.dataset.code);
   });
+  lobby.addEventListener('rooms', (e) => onRooms(e.detail));
+  lobby.addEventListener('error', (e) => {
+    const err = e.detail;
+    if (err.code === 'bad_key') {
+      rooms = [];
+      renderRooms(err);
+      renderUser('bad', 'Schlüssel fehlt');
+    } else if (!lobby.connected) {
+      renderRooms(err);
+      renderUser('bad', 'nicht erreichbar');
+    }
+  });
+  // Klick auf eine Windows-Benachrichtigung
+  window.api.onNotifyOpen((room) => (room ? joinFromList(room) : showPage('watch')));
   $('#btnBackToTiles').addEventListener('click', () => {
     browsing = false;
     renderWatch();
@@ -1210,7 +1345,10 @@ function initTiles() {
   tiles.setLayout(settings.watchLayout || 'grid');
   tiles.addEventListener('change', renderNav);
   tiles.addEventListener('popout', (e) => popOut(e.detail));
-  tiles.addEventListener('ended', (e) => toast(`${e.detail.tile.hostName || 'Stream'}: ${e.detail.message}`, 4000));
+  tiles.addEventListener('ended', (e) => {
+    if (settings.endSound !== false) playEndChime();
+    toast(`${e.detail.tile.hostName || 'Stream'}: ${e.detail.message}`, 4000);
+  });
   // Fokus per Doppelklick schaltet die Anordnung um -> Auswahl mitziehen.
   tiles.addEventListener('layout', (e) => {
     settings.watchLayout = e.detail;

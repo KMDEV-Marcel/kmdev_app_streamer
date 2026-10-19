@@ -2,6 +2,7 @@
 // funktioniert im P2P- wie im Server-Modus.
 import { Signaling, ViewerSession } from '/watch/rtc.js';
 import { joinLink } from '/watch/invite.js';
+import { playEndChime } from '/watch/sounds.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SERVER = `${location.protocol === 'http:' ? 'ws:' : 'wss:'}//${location.host}/ws`;
@@ -76,7 +77,13 @@ async function watch() {
         s.codec || null
       ].filter(Boolean).join(' · ');
     });
-    sig.on('host-left', () => end('Der Stream wurde beendet.'));
+    sig.on('audience', (m) => {
+      const names = m.names || [];
+      const el = $('#audience');
+      el.textContent = names.length ? `👁 ${names.length} · ${names.slice(0, 5).join(', ')}${names.length > 5 ? ' …' : ''}` : '';
+      el.title = names.length ? `Es schauen zu: ${names.join(', ')}` : '';
+    });
+    sig.on('host-left', () => { playEndChime(); end('Der Stream wurde beendet.'); });
     sig.on('kicked', () => end('Du wurdest vom Host entfernt.'));
     sig.on('disconnected', () => { if (current && current.sig === sig) overlay('Verbindung zum Server verloren.'); });
   } catch (e) {
@@ -114,6 +121,7 @@ function leave() {
   $('#player').hidden = true;
   $('#lobby').hidden = false;
   $('#stats').textContent = '';
+  $('#audience').textContent = '';
   document.title = 'KM-DEV Stream';
 }
 

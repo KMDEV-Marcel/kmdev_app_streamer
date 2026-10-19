@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('api', {
 
   openPopout: (data) => ipcRenderer.invoke('popout:open', data),
   pinPopout: (on) => ipcRenderer.invoke('popout:pin', on),
+  dockPopout: (data) => ipcRenderer.invoke('popout:dock', data),
+  onPopoutDock: (cb) => ipcRenderer.on('popout:dock', (_e, data) => cb(data)),
 
   // Einladungslinks: einen evtl. beim Start uebergebenen Link sofort holen,
   // danach auf weitere warten.

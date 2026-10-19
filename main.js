@@ -294,7 +294,9 @@ ipcMain.handle('notify:show', (_e, n) => {
   const link = typeof n.link === 'string' && n.link.startsWith(PROTOCOL + '://') ? n.link : null;
   const plain = { title, body, icon: ICON };
   if (link && app.isPackaged && process.platform === 'win32') {
-    const toastXml = `<toast launch="${xmlEsc(link)}" activationType="protocol">
+    // scenario="urgent": „Wichtige Benachrichtigung“ – darf „Nicht stören“
+    // durchbrechen, wenn die App in Windows als Priorität erlaubt ist.
+    const toastXml = `<toast launch="${xmlEsc(link)}" activationType="protocol" scenario="urgent">
       <visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>
       <actions>
         <action content="Beitreten" activationType="protocol" arguments="${xmlEsc(link)}"/>
@@ -366,6 +368,22 @@ ipcMain.handle('popout:open', (_e, data) => {
   const d = Buffer.from(JSON.stringify(data)).toString('base64url');
   w.loadFile(path.join(__dirname, 'renderer', 'popout.html'), { query: { d } });
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  return true;
+});
+
+// Pop-out schliessen und den Stream im Hauptfenster wieder als Kachel oeffnen.
+ipcMain.handle('popout:dock', (e, d) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (!w || !popouts.has(w) || !d || typeof d.room !== 'string') return false;
+  sendToWin('popout:dock', {
+    serverUrl: String(d.serverUrl || ''),
+    room: d.room,
+    password: String(d.password || ''),
+    volume: Number(d.volume ?? 1),
+    muted: !!d.muted
+  });
+  w.close();
+  showWindow();
   return true;
 });
 

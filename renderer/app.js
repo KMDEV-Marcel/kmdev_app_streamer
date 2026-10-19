@@ -1007,6 +1007,20 @@ async function openStream(room, password = '', serverUrl = settings.serverUrl) {
   renderNav();
 }
 
+// Ein Pop-out kommt zurueck ins Hauptfenster.
+async function dockStream(d) {
+  showPage('watch');
+  browsing = false;
+  try {
+    const tile = await tiles.open({ serverUrl: d.serverUrl || settings.serverUrl, room: d.room, password: d.password, name: displayName() });
+    tile.setVolume(d.volume ?? 1);
+    tile.setMuted(!!d.muted);
+  } catch (e) {
+    toast('Andocken fehlgeschlagen: ' + e.message, 4000);
+  }
+  renderNav();
+}
+
 function popOut(tile) {
   window.api.openPopout({
     serverUrl: tile.serverUrl,
@@ -1265,6 +1279,7 @@ function wire() {
     }
   });
   // Klick auf eine Windows-Benachrichtigung
+  window.api.onPopoutDock(dockStream);
   window.api.onNotifyOpen((room) => (room ? joinFromList(room) : showPage('watch')));
   $('#btnBackToTiles').addEventListener('click', () => {
     browsing = false;

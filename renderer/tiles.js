@@ -9,6 +9,11 @@
  */
 import { Signaling, ViewerSession } from './rtc.js';
 import { icon } from './icons.js';
+import { showMenu } from './menu.js';
+
+const ZOOM_MAX = 6;
+// Hier landende Mausrad-/Ziehen-Ereignisse gehoeren zu den Bedienelementen.
+const CONTROLS = '.tile-ctrl, .tile-bar, .tile-head, .tile-badges, .tile-zoom, .tile-resize';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -46,6 +51,7 @@ export class Tile extends EventTarget {
     this.session = null;
     this.rect = null; // freie Anordnung: { x, y, w, h } in Prozent
     this.el = this.render();
+    this.initZoom();
   }
 
   render() {
@@ -84,6 +90,103 @@ export class Tile extends EventTarget {
     el.querySelector('.tile-focus').addEventListener('click', () => this.emit('focus'));
     this.video.addEventListener('dblclick', () => this.emit('focus'));
     return el;
+  }
+
+  /* ---------- Zoom: Mausrad zoomt zur Mausposition, Ziehen verschiebt ---------- */
+
+  // Das Pop-out tauscht el/video nach dem Konstruktor aus und ruft das erneut auf.
+  initZoom() {
+    this.zoom = { s: 1, x: 0, y: 0 };
+    const el = this.el;
+    const badge = document.createElement('button');
+    badge.className = 'tile-zoom';
+    badge.hidden = true;
+    badge.title = 'Zoom zurücksetzen';
+    badge.addEventListener('click', () => this.resetZoom());
+    el.append(badge);
+    this.zoomBadge = badge;
+
+    el.addEventListener('wheel', (e) => {
+      if (e.target.closest(CONTROLS)) return;
+      e.preventDefault();
+      const box = el.getBoundingClientRect();
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      this.zoomAt(e.clientX - box.left, e.clientY - box.top, this.zoom.s * factor);
+    }, { passive: false });
+
+    // Verschieben nur im gezoomten Zustand – sonst bleibt Ziehen beim
+    // Verschieben der Kachel (freie Anordnung).
+    el.addEventListener('pointerdown', (e) => {
+      if (this.zoom.s <= 1 || e.button !== 0 || e.target.closest(CONTROLS)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const start = { x: e.clientX, y: e.clientY, zx: this.zoom.x, zy: this.zoom.y };
+      el.setPointerCapture(e.pointerId);
+      el.classList.add('panning');
+      const move = (ev) => {
+        this.zoom.x = start.zx + ev.clientX - start.x;
+        this.zoom.y = start.zy + ev.clientY - start.y;
+        this.applyZoom();
+      };
+      const up = () => {
+        el.classList.remove('panning');
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+      };
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+  }
+
+  zoomAt(px, py, scale) {
+    const z = this.zoom;
+    const s = Math.min(ZOOM_MAX, Math.max(1, scale));
+    z.x = px - (px - z.x) * (s / z.s);
+    z.y = py - (py - z.y) * (s / z.s);
+    z.s = s;
+    this.applyZoom();
+  }
+
+  // Zur Mitte zoomen (Menue, Tasten).
+  zoomBy(factor) {
+    const box = this.el.getBoundingClientRect();
+    this.zoomAt(box.width / 2, box.height / 2, this.zoom.s * factor);
+  }
+
+  resetZoom() {
+    this.zoom = { s: 1, x: 0, y: 0 };
+    this.applyZoom();
+  }
+
+  applyZoom() {
+    const z = this.zoom;
+    const { width: W, height: H } = this.el.getBoundingClientRect();
+    if (z.s <= 1.001) {
+      z.s = 1;
+      z.x = 0;
+      z.y = 0;
+    }
+    // Bild nie aus dem Rahmen schieben.
+    z.x = Math.min(0, Math.max(W * (1 - z.s), z.x));
+    z.y = Math.min(0, Math.max(H * (1 - z.s), z.y));
+    this.video.style.transform = z.s === 1 ? '' : `translate(${z.x}px, ${z.y}px) scale(${z.s})`;
+    this.el.classList.toggle('zoomed', z.s > 1);
+    this.zoomBadge.hidden = z.s === 1;
+    this.zoomBadge.textContent = `${Math.round(z.s * 100)} %  ×`;
+  }
+
+  // Gemeinsame Eintraege fuers Rechtsklick-Menue.
+  baseMenu() {
+    return [
+      { label: this.muted ? 'Ton an' : 'Stummschalten', icon: this.muted ? 'volume_up' : 'volume_off', action: () => this.setMuted(!this.muted) },
+      { label: 'Vergrößern', icon: 'zoom_in', action: () => this.zoomBy(1.5) },
+      ...(this.zoom.s > 1 ? [
+        { label: 'Verkleinern', icon: 'zoom_out', action: () => this.zoomBy(1 / 1.5) },
+        { label: 'Zoom zurücksetzen', icon: 'fit_screen', action: () => this.resetZoom() }
+      ] : [])
+    ];
   }
 
   emit(type) {
@@ -208,8 +311,12 @@ export class TileManager extends EventTarget {
     this.layout = 'grid';
     this.focusId = null;
     this.z = 1;
-    new ResizeObserver(() => this.arrange()).observe(container);
+    new ResizeObserver(() => {
+      this.arrange();
+      for (const t of this.tiles) t.applyZoom();
+    }).observe(container);
     this.wireFreeLayout();
+    this.wireMenu();
   }
 
   get size() {
@@ -339,17 +446,36 @@ export class TileManager extends EventTarget {
     Object.assign(t.el.style, { left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` });
   }
 
+  // Rechtsklick auf eine Kachel.
+  wireMenu() {
+    this.container.addEventListener('contextmenu', (e) => {
+      const el = e.target.closest('.tile');
+      const tile = el && this.tiles.find((t) => String(t.id) === el.dataset.id);
+      if (!tile) return;
+      e.preventDefault();
+      const focused = this.layout === 'focus' && this.focusId === tile.id;
+      showMenu(e.clientX, e.clientY, [
+        ...tile.baseMenu(),
+        '-',
+        { label: focused ? 'Wieder im Raster' : 'Groß anzeigen', icon: focused ? 'grid_view' : 'open_in_full', action: () => this.toggleFocus(tile.id) },
+        { label: 'In eigenem Fenster öffnen', icon: 'open_in_new', action: () => this.dispatchEvent(new CustomEvent('popout', { detail: tile })) },
+        '-',
+        { label: 'Stream beenden', icon: 'close', danger: true, action: () => this.remove(tile) }
+      ]);
+    });
+  }
+
   // Ziehen an der Titelleiste verschiebt, Ziehen an der Ecke skaliert.
   wireFreeLayout() {
     this.container.addEventListener('pointerdown', (e) => {
-      if (this.layout !== 'free') return;
+      if (this.layout !== 'free' || e.button !== 0) return;
       const el = e.target.closest('.tile');
       if (!el) return;
       const tile = this.tiles.find((t) => String(t.id) === el.dataset.id);
       el.style.zIndex = String(++this.z);
       const resize = e.target.classList.contains('tile-resize');
       // Verschieben: ueberall auf der Kachel ausser auf den Bedienelementen.
-      const move = !resize && !e.target.closest('.tile-ctrl');
+      const move = !resize && !e.target.closest('.tile-ctrl, .tile-zoom, .tile-badges');
       if (!tile || (!resize && !move)) return;
       e.preventDefault();
       const box = this.container.getBoundingClientRect();

@@ -33,7 +33,11 @@ const P = {
   push_pin: '<path d="M12 17v5"/><path d="M9 10.76V4h6v6.76a2 2 0 0 0 .55 1.38L18 15H6l2.45-2.86A2 2 0 0 0 9 10.76z"/><path d="M8 4h8"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   visibility: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
-  play_arrow: '<path d="M7 4v16l13-8z"/>'
+  play_arrow: '<path d="M7 4v16l13-8z"/>',
+  zoom_in: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/>',
+  zoom_out: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/>',
+  fit_screen: '<path d="M4 9V5a1 1 0 0 1 1-1h4"/><path d="M15 4h4a1 1 0 0 1 1 1v4"/><path d="M20 15v4a1 1 0 0 1-1 1h-4"/><path d="M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="8" y="9" width="8" height="6" rx="1"/>',
+  dock: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 15h8v5"/><path d="m16 8-5 5"/><path d="M11 9v4h4"/>'
 };
 
 export function icon(name, cls = '') {

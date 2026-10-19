@@ -48,13 +48,19 @@ async function handleJson(msg) {
   }
 }
 
+// Schreibt eine Zeile an das Hilfsprogramm, falls es noch zuhoert.
+function write(line) {
+  if (!proc || !proc.stdin || !proc.stdin.writable) return;
+  try { proc.stdin.write(line); } catch { /* schon zu */ }
+}
+
 function sendConfig() {
   if (!proc || !lastConfig) return;
   const { mode, master, selected, volumes } = lastConfig;
   const clean = (s) => String(s).replace(/[\t\r\n,;=]/g, '');
   const sel = (selected || []).map(clean).join(',');
   const vols = Object.entries(volumes || {}).map(([exe, v]) => `${clean(exe)}=${Number(v).toFixed(3)}`).join(';');
-  proc.stdin.write(`config\t${mode}\t${Number(master).toFixed(3)}\t${sel}\t${vols}\n`);
+  write(`config\t${mode}\t${Number(master).toFixed(3)}\t${sel}\t${vols}\n`);
 }
 
 // Startet das Hilfsprogramm und gibt dem Fenster das Ende des MessagePorts.
@@ -69,6 +75,14 @@ function start(webContents) {
   }
   setStatus({ state: 'starting' });
   proc = spawn(EXE, ['--exclude-tree', String(process.pid)], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+  // Ist das Hilfsprogramm schon weg, meldet ein Schreibversuch EPIPE erst
+  // spaeter als 'error'-Ereignis – ohne Empfaenger waere das ein Absturz-Dialog.
+  proc.stdin.on('error', (e) => console.warn('Audio-Hilfsprogramm (stdin)', e.message));
+  proc.on('error', (e) => {
+    console.warn('Audio-Hilfsprogramm', e.message);
+    proc = null;
+    setStatus({ state: 'error', message: `Audio-Hilfsprogramm: ${e.message}` });
+  });
   attachPort(webContents);
 
   let buf = Buffer.alloc(0);
@@ -110,15 +124,17 @@ function configure(cfg) {
 }
 
 function requestList() {
-  if (proc) proc.stdin.write('list\n');
+  write('list\n');
 }
 
+// Darf mehrfach aufgerufen werden (Fenster zu + App beenden).
 function stop() {
   if (port) { port.close(); port = null; }
-  if (!proc) return;
-  try { proc.stdin.write('quit\n'); } catch { /* schon zu */ }
+  if (!proc || proc.stopping) return;
+  proc.stopping = true;
+  write('quit\n');
   const p = proc;
-  setTimeout(() => { if (!p.killed && p.exitCode === null) p.kill(); }, 1000);
+  setTimeout(() => { if (p.exitCode === null && !p.killed) { try { p.kill(); } catch { /* schon weg */ } } }, 1000);
 }
 
 function init(handlers) {

@@ -4,6 +4,13 @@
  */
 export const CHANGELOG = [
   {
+    version: '0.4.4',
+    items: [
+      'Kein Fehlerfenster mehr beim Beenden der App.',
+      'Unerwartete Fehler werden in error.log im Einstellungsordner festgehalten.'
+    ]
+  },
+  {
     version: '0.4.3',
     items: [
       'Nach einem Update siehst du, was neu ist.',

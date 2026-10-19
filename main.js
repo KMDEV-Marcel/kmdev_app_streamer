@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, Menu, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, shell, Menu, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -17,6 +17,29 @@ let win = null;
 let streaming = false;
 let selectedSourceId = null;
 let pendingInvite = null; // Einladungslink, bevor das Fenster bereit ist
+let quitting = false;
+
+/* ---------- Fehler ----------
+   Unerwartete Fehler landen in error.log im Einstellungsordner. Beim Beenden
+   (Verbindungen und Hilfsprogramme raeumen sich gerade auf) kein Dialog –
+   sonst nur ein Hinweis, die App laeuft weiter. */
+
+const ERROR_LOG = path.join(app.getPath('userData'), 'error.log');
+
+function logError(kind, err) {
+  try {
+    if (fs.existsSync(ERROR_LOG) && fs.statSync(ERROR_LOG).size > 512 * 1024) fs.renameSync(ERROR_LOG, ERROR_LOG + '.old');
+    fs.appendFileSync(ERROR_LOG, `${new Date().toISOString()} [${app.getVersion()}] ${kind}${quitting ? ' (beim Beenden)' : ''}: ${(err && err.stack) || err}\n`);
+  } catch { /* Log nicht schreibbar */ }
+}
+
+process.on('uncaughtException', (err) => {
+  logError('uncaughtException', err);
+  if (quitting || !app.isReady()) return;
+  dialog.showErrorBox('KM-DEV Stream – Fehler', `${(err && err.stack) || err}\n\nDetails: ${ERROR_LOG}`);
+});
+process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
+app.on('before-quit', () => { quitting = true; });
 
 /* ---------- Einstellungen ---------- */
 
@@ -117,6 +140,8 @@ function createWindow() {
   // Autostart: nur in der Taskleiste erscheinen, nicht ins Gesicht springen.
   if (startedByAutostart) win.once('ready-to-show', () => win.minimize());
 
+  // Hauptfenster zu = App wird beendet (Fehler ab hier nur noch ins Log).
+  win.on('close', () => { quitting = true; });
   // Pop-out-Fenster gehoeren zum Hauptfenster.
   win.on('closed', () => {
     for (const w of popouts) if (!w.isDestroyed()) w.close();
@@ -232,7 +257,7 @@ ipcMain.handle('settings:save', (_e, s) => saveSettings(s));
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 ipcMain.handle('app:streaming', (_e, on) => {
   streaming = !!on;
-  if (win) win.setTitle(`KM-DEV Stream ${app.getVersion()}${streaming ? ' – LIVE' : ''}`);
+  if (win && !win.isDestroyed()) win.setTitle(`KM-DEV Stream ${app.getVersion()}${streaming ? ' – LIVE' : ''}`);
   return streaming;
 });
 ipcMain.handle('shell:open', (_e, url) => {

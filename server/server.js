@@ -461,7 +461,8 @@ const WEB_FILES = {
   '/watch/watch.css': ['web/watch.css', 'text/css; charset=utf-8'],
   '/watch/rtc.js': ['../renderer/rtc.js', 'text/javascript; charset=utf-8'],
   '/watch/invite.js': ['../renderer/invite.js', 'text/javascript; charset=utf-8'],
-  '/watch/sounds.js': ['../renderer/sounds.js', 'text/javascript; charset=utf-8']
+  '/watch/sounds.js': ['../renderer/sounds.js', 'text/javascript; charset=utf-8'],
+  '/watch/logo.svg': ['../renderer/logo.svg', 'image/svg+xml']
 };
 
 function serveWeb(pathname, res) {

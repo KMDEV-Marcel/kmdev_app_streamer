@@ -1,0 +1,15 @@
+<!-- KM-DEV Stream: KM-DEV-Treppe als Sendequelle, Wellen = Uebertragung, aeussere Welle in Live-Farbe -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="20.0" y="421.6" width="70.3" height="70.3" fill="#00a359"/>
+  <rect x="20.0" y="341.3" width="70.3" height="70.3" fill="#00a359"/>
+  <rect x="20.0" y="260.9" width="70.3" height="70.3" fill="#00a359"/>
+  <rect x="20.0" y="180.5" width="70.3" height="70.3" fill="#00a359"/>
+  <rect x="100.3" y="421.6" width="70.3" height="70.3" fill="#00b764"/>
+  <rect x="100.3" y="341.3" width="70.3" height="70.3" fill="#00b764"/>
+  <rect x="100.3" y="260.9" width="70.3" height="70.3" fill="#00b764"/>
+  <rect x="180.7" y="421.6" width="70.3" height="70.3" fill="#00e17b"/>
+  <rect x="180.7" y="341.3" width="70.3" height="70.3" fill="#00e17b"/>
+  <rect x="261.1" y="421.6" width="70.3" height="70.3" fill="#00ff8b"/>
+  <path d="M391.5 492.0 A371.5 371.5 0 0 0 20.0 120.4" fill="none" stroke="#00ff8b" stroke-width="48.2" stroke-linecap="butt"/>
+  <path d="M467.8 492.0 A447.8 447.8 0 0 0 20.0 44.1" fill="none" stroke="#ff5b3a" stroke-width="48.2" stroke-linecap="butt"/>
+</svg>

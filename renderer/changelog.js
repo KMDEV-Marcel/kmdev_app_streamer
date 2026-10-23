@@ -4,6 +4,10 @@
  */
 export const CHANGELOG = [
   {
+    version: '0.4.6',
+    items: ['Überarbeitetes Logo: die KM-DEV-Treppe als Play-Taste.']
+  },
+  {
     version: '0.4.5',
     items: [
       'Der eigene Stream pausiert, solange du ein Fenster außerhalb der App benutzt – abschaltbar in den Einstellungen.',

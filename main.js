@@ -83,6 +83,7 @@ const DEFAULT_SETTINGS = {
   connectionMode: 'p2p',
   title: '',
   joinSound: true, // Ton, wenn beim eigenen Stream jemand beitritt
+  pauseOnBlur: true, // Stream pausieren, solange ein Fenster ausserhalb der App benutzt wird
   endSound: true, // Ton, wenn ein angesehener Stream endet
   notifyLive: true, // Benachrichtigung, wenn jemand oeffentlich live geht
   lastVersion: '', // zuletzt gestartete Version (fuer „Was ist neu“)
@@ -343,6 +344,21 @@ ipcMain.handle('autostart:set', (_e, on) => {
 function sendToWin(channel, data) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, data);
 }
+
+// Hat irgendein Fenster der App (Hauptfenster oder Pop-out) den Fokus?
+// Beim Wechsel zwischen zwei App-Fenstern kommt erst blur, dann focus –
+// deshalb einen Tick warten und dann den tatsaechlichen Stand melden.
+let appFocused = null;
+function reportFocus() {
+  setImmediate(() => {
+    const focused = !!BrowserWindow.getFocusedWindow();
+    if (focused === appFocused) return;
+    appFocused = focused;
+    sendToWin('app:focus', focused);
+  });
+}
+app.on('browser-window-focus', reportFocus);
+app.on('browser-window-blur', reportFocus);
 
 audio.init({
   onStatus: (s) => sendToWin('audio:status', s),

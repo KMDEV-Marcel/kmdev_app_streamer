@@ -190,6 +190,8 @@ input[type=range] { accent-color: var(--accent); }
 .pill-info { display: flex; align-items: center; height: 30px; padding: 0 12px; border-radius: 999px; background: rgba(13, 17, 16, .8); font: 500 12px var(--mono); color: var(--muted); }
 .pill-info:empty { display: none; }
 .pill-info.warn { color: var(--warn); }
+.pill-paused { display: flex; align-items: center; height: 30px; padding: 0 12px; border-radius: 999px; background: var(--warn); color: var(--bg); font: 600 12px var(--mono); }
+.pill-paused[hidden] { display: none; }
 
 .live-bar {
   position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 3;

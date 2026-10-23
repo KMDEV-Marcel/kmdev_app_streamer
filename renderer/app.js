@@ -24,6 +24,7 @@ const QUALITY = [['720', 'Flüssig'], ['1080', 'Scharf'], ['source', 'Maximal'],
 let settings = null;
 let captureStream = null;   // aktueller MediaStream der Quelle
 let host = null;            // { sig, session, room, since }
+let appFocused = document.hasFocus(); // hat ein Fenster der App den Fokus?
 let tiles = null;           // TileManager (Zuschauen)
 let updateState = { state: 'idle' };
 let browsing = false;       // Zuschauen: Startseite trotz offener Streams zeigen
@@ -241,6 +242,11 @@ function initPanel() {
     });
   }
 
+  $('#chkPauseOnBlur').addEventListener('change', (e) => {
+    settings.pauseOnBlur = e.target.checked;
+    persist();
+    applyPause();
+  });
   $('#chkJoinSound').addEventListener('change', (e) => {
     settings.joinSound = e.target.checked;
     persist();
@@ -318,6 +324,7 @@ function renderPanel() {
   for (const el of Object.values(segs)) refreshSeg(el);
   $('#chkAppAudio').checked = !!settings.appAudio;
   $('#chkAppAudioS').checked = !!settings.appAudio;
+  $('#chkPauseOnBlur').checked = settings.pauseOnBlur !== false;
   $('#chkJoinSound').checked = settings.joinSound !== false;
   $('#chkEndSound').checked = settings.endSound !== false;
   $('#chkNotifyLive').checked = settings.notifyLive !== false;
@@ -608,6 +615,7 @@ async function recapture() {
 function setCaptureStream(stream) {
   captureStream = stream;
   preview.srcObject = stream;
+  applyPause();
   $('#btnStart').disabled = !stream || !!host;
   if (!stream) {
     selectedSourceId = null;
@@ -617,6 +625,19 @@ function setCaptureStream(stream) {
 }
 
 /* ---------- Senden ---------- */
+
+// Waehrend des Sendens pausiert der Stream (Einstellung pauseOnBlur), sobald ein Fenster ausserhalb der
+// App benutzt wird: Die Spuren werden abgeschaltet (Zuschauer sehen Schwarz,
+// hoeren Stille), bis die App wieder angeklickt wird. Ohne Neuverhandlung.
+function applyPause() {
+  const paused = !!host && !appFocused && settings.pauseOnBlur !== false;
+  if (captureStream) captureStream.getTracks().forEach((t) => { t.enabled = !paused; });
+  $('#livePaused').hidden = !paused;
+  if (host && host.paused !== paused) {
+    host.paused = paused;
+    if (!paused) setTimeout(pushThumb, 1000); // Vorschaubild auffrischen
+  }
+}
 
 let liveTimer = null;
 
@@ -681,6 +702,7 @@ async function startHosting() {
     host.thumbTimer = setInterval(pushThumb, THUMB_MS);
     setTimeout(pushThumb, 1500); // erstes Bild, sobald die Aufnahme laeuft
     window.api.setStreaming(true);
+    applyPause();
     renderSendView();
     renderViewers();
     renderUpdateUi();
@@ -705,6 +727,7 @@ function stopHosting() {
   $('#btnStart').disabled = !captureStream;
   $('#sendStatus').textContent = '';
   window.api.setStreaming(false);
+  applyPause();
   renderSendView();
   renderViewers();
   renderUpdateUi();
@@ -722,7 +745,7 @@ thumbCanvas.height = 216;
 // Nur oeffentliche Streams ohne Passwort zeigen ein Vorschaubild – bei allen
 // anderen verlaesst kein Bild den Rechner.
 async function pushThumb() {
-  if (!host || !captureStream) return;
+  if (!host || !captureStream || host.paused) return;
   if (settings.privacy !== 'public' || $('#inpPassword').value) {
     if (host.thumbSent) host.sig.send({ type: 'host-update', thumb: null });
     host.thumbSent = false;
@@ -1307,6 +1330,7 @@ function wire() {
   });
   // Klick auf eine Windows-Benachrichtigung
   window.api.onPopoutDock(dockStream);
+  window.api.onAppFocus((on) => { appFocused = on; applyPause(); });
   window.api.onNotifyOpen((room) => (room ? joinFromList(room) : showPage('watch')));
   $('#btnBackToTiles').addEventListener('click', () => {
     browsing = false;

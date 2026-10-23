@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('api', {
   saveSettings: (s) => ipcRenderer.invoke('settings:save', s),
   appInfo: () => ipcRenderer.invoke('app:info'),
   setStreaming: (on) => ipcRenderer.invoke('app:streaming', on),
+  // true, solange ein Fenster der App den Fokus hat
+  onAppFocus: (cb) => ipcRenderer.on('app:focus', (_e, on) => cb(on)),
   openUrl: (url) => ipcRenderer.invoke('shell:open', url),
 
   getSources: () => ipcRenderer.invoke('capture:sources'),

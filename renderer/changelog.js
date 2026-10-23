@@ -4,6 +4,13 @@
  */
 export const CHANGELOG = [
   {
+    version: '0.4.5',
+    items: [
+      'Der eigene Stream pausiert, solange du ein Fenster außerhalb der App benutzt – abschaltbar in den Einstellungen.',
+      'Neues Logo.'
+    ]
+  },
+  {
     version: '0.4.4',
     items: [
       'Kein Fehlerfenster mehr beim Beenden der App.',

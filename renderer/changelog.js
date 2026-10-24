@@ -4,6 +4,10 @@
  */
 export const CHANGELOG = [
   {
+    version: '0.4.7',
+    items: ['Korrektur: Außerhalb der App pausiert nur noch deine eigene Vorschau – Zuschauer sehen den Stream ohne Unterbrechung.']
+  },
+  {
     version: '0.4.6',
     items: ['Überarbeitetes Logo: die KM-DEV-Treppe als Play-Taste.']
   },

@@ -83,7 +83,7 @@ const DEFAULT_SETTINGS = {
   connectionMode: 'p2p',
   title: '',
   joinSound: true, // Ton, wenn beim eigenen Stream jemand beitritt
-  pauseOnBlur: true, // Stream pausieren, solange ein Fenster ausserhalb der App benutzt wird
+  pauseOnBlur: true, // eigene Vorschau pausieren, solange ein Fenster ausserhalb der App benutzt wird
   endSound: true, // Ton, wenn ein angesehener Stream endet
   notifyLive: true, // Benachrichtigung, wenn jemand oeffentlich live geht
   lastVersion: '', // zuletzt gestartete Version (fuer „Was ist neu“)

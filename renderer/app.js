@@ -575,7 +575,7 @@ function placePreview() {
   }
   if (preview.parentElement !== target) {
     target.prepend(preview);
-    preview.play().catch(() => {});
+    applyPause(); // spielt ab, ausser die Vorschau ist gerade pausiert
   }
 }
 
@@ -626,17 +626,14 @@ function setCaptureStream(stream) {
 
 /* ---------- Senden ---------- */
 
-// Waehrend des Sendens pausiert der Stream (Einstellung pauseOnBlur), sobald ein Fenster ausserhalb der
-// App benutzt wird: Die Spuren werden abgeschaltet (Zuschauer sehen Schwarz,
-// hoeren Stille), bis die App wieder angeklickt wird. Ohne Neuverhandlung.
+// Waehrend des Sendens pausiert nur die eigene Vorschau (Einstellung pauseOnBlur), sobald ein
+// Fenster ausserhalb der App benutzt wird – z. B. die uebertragene Anwendung. Die
+// Spuren laufen unveraendert weiter, Zuschauer sehen und hoeren alles.
 function applyPause() {
   const paused = !!host && !appFocused && settings.pauseOnBlur !== false;
-  if (captureStream) captureStream.getTracks().forEach((t) => { t.enabled = !paused; });
+  if (paused) preview.pause();
+  else if (preview.srcObject && preview.paused) preview.play().catch(() => {});
   $('#livePaused').hidden = !paused;
-  if (host && host.paused !== paused) {
-    host.paused = paused;
-    if (!paused) setTimeout(pushThumb, 1000); // Vorschaubild auffrischen
-  }
 }
 
 let liveTimer = null;
@@ -745,7 +742,7 @@ thumbCanvas.height = 216;
 // Nur oeffentliche Streams ohne Passwort zeigen ein Vorschaubild – bei allen
 // anderen verlaesst kein Bild den Rechner.
 async function pushThumb() {
-  if (!host || !captureStream || host.paused) return;
+  if (!host || !captureStream) return;
   if (settings.privacy !== 'public' || $('#inpPassword').value) {
     if (host.thumbSent) host.sig.send({ type: 'host-update', thumb: null });
     host.thumbSent = false;
